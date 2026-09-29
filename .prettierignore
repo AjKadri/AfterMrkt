@@ -1,0 +1,8 @@
+.git/
+.agent/
+coverage/
+dist/
+evidence/
+node_modules/
+package-lock.json
+
