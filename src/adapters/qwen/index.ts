@@ -5,4 +5,10 @@ export {
   QwenClient,
   parseQwenEvent,
 } from './client.js';
-export type { QwenCall, QwenClientOptions } from './client.js';
+export type {
+  QwenCall,
+  QwenClientOptions,
+  QwenJsonSchema,
+  QwenResponseFormat,
+  QwenTokenAccounting,
+} from './client.js';

@@ -4,6 +4,7 @@ import {
   type QwenEvent,
   type QwenUsage,
 } from '../../contracts/qwen.js';
+import Decimal from 'decimal.js';
 import { ProbeError } from '../../lib/errors.js';
 import { requestRaw, joinUrl, parseJsonBody, type RawHttpResponse } from '../../lib/http.js';
 
@@ -16,6 +17,28 @@ export type QwenClientOptions = {
   apiKey?: string;
   model?: string;
   timeoutMs?: number;
+  responseFormat?: QwenResponseFormat;
+  inputPriceUsdPerMillion?: string;
+  outputPriceUsdPerMillion?: string;
+};
+
+export type QwenJsonSchema = {
+  name: string;
+  schema: Record<string, unknown>;
+  strict?: boolean;
+};
+
+export type QwenResponseFormat =
+  { type: 'json_object' } | { type: 'json_schema'; json_schema: QwenJsonSchema };
+
+export type QwenTokenAccounting = {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  cachedTokens: number | null;
+  providerReportedCostUsd: string | null;
+  estimatedCostUsd: string | null;
+  pricingSource: 'provider' | 'configured-rates' | 'unavailable';
 };
 
 export type QwenCall = {
@@ -23,6 +46,7 @@ export type QwenCall = {
   response: Record<string, unknown>;
   content: string;
   usage: QwenUsage | null;
+  accounting: QwenTokenAccounting;
   latencyMs: number;
   model: string;
 };
@@ -32,34 +56,49 @@ export class QwenClient {
   readonly apiKey: string | undefined;
   readonly model: string;
   readonly timeoutMs: number;
+  readonly responseFormat: QwenResponseFormat;
+  readonly inputPriceUsdPerMillion: string | undefined;
+  readonly outputPriceUsdPerMillion: string | undefined;
 
   constructor(options: QwenClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? process.env.QWEN_BASE_URL ?? DEFAULT_QWEN_BASE_URL;
     this.apiKey = options.apiKey ?? process.env.QWEN_API_KEY;
     this.model = options.model ?? process.env.QWEN_MODEL ?? DEFAULT_QWEN_MODEL;
     this.timeoutMs = options.timeoutMs ?? Number(process.env.QWEN_TIMEOUT_MS ?? 30_000);
+    this.responseFormat = options.responseFormat ?? { type: 'json_object' };
+    this.inputPriceUsdPerMillion = options.inputPriceUsdPerMillion;
+    this.outputPriceUsdPerMillion = options.outputPriceUsdPerMillion;
   }
 
   async extractEvent(input: {
     sourceUrl: string;
     sourceText: string;
     promptVersion?: string;
+    responseFormat?: QwenResponseFormat;
   }): Promise<QwenCall> {
-    return this.complete(buildExtractionMessages(input));
+    return this.complete(buildExtractionMessages(input), input.responseFormat);
   }
 
-  async repairEvent(input: { invalidOutput: string; promptVersion?: string }): Promise<QwenCall> {
-    return this.complete([
-      {
-        role: 'system',
-        content: `Repair only the supplied invalid output into the required JSON object. Return JSON only. Do not add facts. Use prompt version ${input.promptVersion ?? QWEN_PROMPT_VERSION}.`,
-      },
-      { role: 'user', content: input.invalidOutput },
-    ]);
+  async repairEvent(input: {
+    invalidOutput: string;
+    promptVersion?: string;
+    responseFormat?: QwenResponseFormat;
+  }): Promise<QwenCall> {
+    return this.complete(
+      [
+        {
+          role: 'system',
+          content: `Repair only the supplied invalid output into the required JSON object. Return JSON only. Do not add facts. Use prompt version ${input.promptVersion ?? QWEN_PROMPT_VERSION}.`,
+        },
+        { role: 'user', content: input.invalidOutput },
+      ],
+      input.responseFormat,
+    );
   }
 
   private async complete(
     messages: Array<{ role: 'system' | 'user'; content: string }>,
+    responseFormat?: QwenResponseFormat,
   ): Promise<QwenCall> {
     if (!this.apiKey) {
       throw new ProbeError('authentication_invalid', 'QWEN_API_KEY is not set');
@@ -81,7 +120,7 @@ export class QwenClient {
         body: JSON.stringify({
           model: this.model,
           messages,
-          response_format: { type: 'json_object' },
+          response_format: responseFormat ?? this.responseFormat,
           temperature: 0,
           max_tokens: 600,
         }),
@@ -125,15 +164,75 @@ export class QwenClient {
     const content = extractContent(response);
     const usageValue = response.usage;
     const usageResult = QwenUsageSchema.safeParse(usageValue);
+    const usage = usageResult.success ? usageResult.data : null;
     return {
       raw,
       response,
       content,
-      usage: usageResult.success ? usageResult.data : null,
+      usage,
+      accounting: buildTokenAccounting(
+        usage,
+        this.inputPriceUsdPerMillion,
+        this.outputPriceUsdPerMillion,
+      ),
       latencyMs: performance.now() - started,
       model: this.model,
     };
   }
+}
+
+function buildTokenAccounting(
+  usage: QwenUsage | null,
+  inputPriceUsdPerMillion: string | undefined,
+  outputPriceUsdPerMillion: string | undefined,
+): QwenTokenAccounting {
+  const inputTokens = usage?.input_tokens ?? usage?.prompt_tokens ?? null;
+  const outputTokens = usage?.output_tokens ?? usage?.completion_tokens ?? null;
+  const totalTokens =
+    usage?.total_tokens ??
+    (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
+  const cachedTokens = usage?.cached_tokens ?? null;
+  const providerReportedCostUsd = usage?.cost === undefined ? null : String(usage.cost);
+  if (providerReportedCostUsd !== null) {
+    return {
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      cachedTokens,
+      providerReportedCostUsd,
+      estimatedCostUsd: null,
+      pricingSource: 'provider',
+    };
+  }
+  if (
+    inputPriceUsdPerMillion !== undefined &&
+    outputPriceUsdPerMillion !== undefined &&
+    inputTokens !== null &&
+    outputTokens !== null
+  ) {
+    const estimated = new Decimal(inputTokens)
+      .times(inputPriceUsdPerMillion)
+      .plus(new Decimal(outputTokens).times(outputPriceUsdPerMillion))
+      .div(1_000_000);
+    return {
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      cachedTokens,
+      providerReportedCostUsd: null,
+      estimatedCostUsd: estimated.toFixed(),
+      pricingSource: 'configured-rates',
+    };
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    cachedTokens,
+    providerReportedCostUsd: null,
+    estimatedCostUsd: null,
+    pricingSource: 'unavailable',
+  };
 }
 
 export function parseQwenEvent(content: string): QwenEvent {

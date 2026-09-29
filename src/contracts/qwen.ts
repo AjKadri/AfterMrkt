@@ -34,6 +34,7 @@ export const QwenUsageSchema = z
     input_tokens: z.number().optional(),
     output_tokens: z.number().optional(),
     cached_tokens: z.number().optional(),
+    cost: z.union([z.string(), z.number()]).optional(),
   })
   .passthrough();
 

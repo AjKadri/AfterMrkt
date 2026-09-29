@@ -20,7 +20,11 @@ import {
 } from '../../contracts/bitget.js';
 import { classifyProviderFailure, ProbeError } from '../../lib/errors.js';
 
-export function parseBitgetResponse<T>(raw: unknown, dataSchema: z.ZodType<T>): BitgetResponse<T> {
+export function parseBitgetResponse<T>(
+  raw: unknown,
+  dataSchema: z.ZodType<T>,
+  httpStatus = 200,
+): BitgetResponse<T> {
   const baseEnvelope = BitgetResponseBaseSchema.extend({ data: z.unknown() }).safeParse(raw);
   if (!baseEnvelope.success) {
     throw new ProbeError('malformed_provider_data', formatZodError(baseEnvelope.error));
@@ -28,10 +32,10 @@ export function parseBitgetResponse<T>(raw: unknown, dataSchema: z.ZodType<T>): 
 
   if (baseEnvelope.data.code !== '00000') {
     throw new ProbeError(
-      classifyProviderFailure(200, baseEnvelope.data.code, baseEnvelope.data.msg),
+      classifyProviderFailure(httpStatus, baseEnvelope.data.code, baseEnvelope.data.msg),
       `Bitget provider error ${baseEnvelope.data.code}: ${baseEnvelope.data.msg}`,
       {
-        httpStatus: 200,
+        httpStatus,
         providerCode: baseEnvelope.data.code,
         providerMessage: baseEnvelope.data.msg,
       },
@@ -46,8 +50,8 @@ export function parseBitgetResponse<T>(raw: unknown, dataSchema: z.ZodType<T>): 
   return { ...baseEnvelope.data, data: dataResult.data } as BitgetResponse<T>;
 }
 
-export function normalizeInstruments(raw: unknown): BitgetInstrument[] {
-  const response = parseBitgetResponse(raw, z.array(InstrumentSchema));
+export function normalizeInstruments(raw: unknown, httpStatus = 200): BitgetInstrument[] {
+  const response = parseBitgetResponse(raw, z.array(InstrumentSchema), httpStatus);
   return response.data.map((instrument) => ({ ...instrument }));
 }
 
@@ -55,8 +59,12 @@ export function selectRealityInstruments(instruments: BitgetInstrument[]): Bitge
   return instruments.filter((instrument) => instrument.isReality?.toLowerCase() === 'yes');
 }
 
-export function normalizeTicker(raw: unknown, expectedSymbol?: string): BitgetTicker {
-  const response = parseBitgetResponse(raw, z.array(TickerSchema));
+export function normalizeTicker(
+  raw: unknown,
+  expectedSymbol?: string,
+  httpStatus = 200,
+): BitgetTicker {
+  const response = parseBitgetResponse(raw, z.array(TickerSchema), httpStatus);
   const ticker = expectedSymbol
     ? response.data.find((item) => item.symbol === expectedSymbol)
     : response.data[0];
@@ -74,8 +82,17 @@ export function normalizeTicker(raw: unknown, expectedSymbol?: string): BitgetTi
   return ticker;
 }
 
-export function normalizeOrderBook(raw: unknown, expectedSymbol?: string): BitgetOrderBook {
-  const response = parseBitgetResponse(raw, OrderBookSchema);
+export function normalizeTickers(raw: unknown, httpStatus = 200): BitgetTicker[] {
+  const response = parseBitgetResponse(raw, z.array(TickerSchema), httpStatus);
+  return response.data;
+}
+
+export function normalizeOrderBook(
+  raw: unknown,
+  expectedSymbol?: string,
+  httpStatus = 200,
+): BitgetOrderBook {
+  const response = parseBitgetResponse(raw, OrderBookSchema, httpStatus);
   if (response.data.symbol) {
     assertExactSymbol(response.data.symbol, expectedSymbol);
   } else if (!expectedSymbol) {
@@ -92,8 +109,12 @@ export function normalizeOrderBook(raw: unknown, expectedSymbol?: string): Bitge
   };
 }
 
-export function normalizeFills(raw: unknown, expectedSymbol?: string): BitgetFill[] {
-  const response = parseBitgetResponse(raw, z.array(FillSchema));
+export function normalizeFills(
+  raw: unknown,
+  expectedSymbol?: string,
+  httpStatus = 200,
+): BitgetFill[] {
+  const response = parseBitgetResponse(raw, z.array(FillSchema), httpStatus);
   if (expectedSymbol) {
     const rawSymbol = getStringField(response.data[0], 'symbol');
     if (rawSymbol) {
@@ -103,23 +124,27 @@ export function normalizeFills(raw: unknown, expectedSymbol?: string): BitgetFil
   return response.data;
 }
 
-export function normalizeCandles(raw: unknown): string[][] {
-  const response = parseBitgetResponse(raw, z.array(CandleSchema));
+export function normalizeCandles(raw: unknown, httpStatus = 200): string[][] {
+  const response = parseBitgetResponse(raw, z.array(CandleSchema), httpStatus);
   return response.data;
 }
 
-export function normalizeStockInfo(raw: unknown): BitgetStockInfo[] {
-  const response = parseBitgetResponse(raw, z.array(StockInfoSchema));
+export function normalizeStockInfo(raw: unknown, httpStatus = 200): BitgetStockInfo[] {
+  const response = parseBitgetResponse(raw, z.array(StockInfoSchema), httpStatus);
   return response.data;
 }
 
-export function normalizeMarketStates(raw: unknown): BitgetMarket[] {
-  const response = parseBitgetResponse(raw, z.union([z.array(MarketSchema), MarketSchema]));
+export function normalizeMarketStates(raw: unknown, httpStatus = 200): BitgetMarket[] {
+  const response = parseBitgetResponse(
+    raw,
+    z.union([z.array(MarketSchema), MarketSchema]),
+    httpStatus,
+  );
   return Array.isArray(response.data) ? response.data : [response.data];
 }
 
-export function normalizeCalendar(raw: unknown): BitgetCalendar {
-  const response = parseBitgetResponse(raw, CalendarSchema);
+export function normalizeCalendar(raw: unknown, httpStatus = 200): BitgetCalendar {
+  const response = parseBitgetResponse(raw, CalendarSchema, httpStatus);
   return response.data;
 }
 

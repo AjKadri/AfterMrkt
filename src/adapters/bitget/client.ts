@@ -1,4 +1,4 @@
-import { ProbeError } from '../../lib/errors.js';
+import { classifyProviderFailure, classifyThrownError, ProbeError } from '../../lib/errors.js';
 import { joinUrl, parseJsonBody, requestRaw, type RawHttpResponse } from '../../lib/http.js';
 
 export const DEFAULT_BITGET_BASE_URL = 'https://api.bitget.com';
@@ -45,7 +45,7 @@ export class BitgetPublicClient {
       });
     } catch (error) {
       throw new ProbeError(
-        'environment_unreachable',
+        classifyThrownError(error),
         `Bitget request failed: ${formatThrownError(error)}`,
       );
     }
@@ -55,7 +55,7 @@ export class BitgetPublicClient {
       json = parseJsonBody(raw.bodyText);
     } catch (error) {
       throw new ProbeError(
-        'malformed_provider_data',
+        classifyProviderFailure(raw.status, undefined, undefined),
         `Bitget returned non-JSON data: ${error instanceof Error ? error.message : String(error)}`,
         { httpStatus: raw.status, rawResponse: raw },
       );

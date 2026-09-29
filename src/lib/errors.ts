@@ -40,6 +40,9 @@ export function classifyProviderFailure(
   if (message.includes('whitelist') || message.includes('white list')) {
     return 'whitelist_denied';
   }
+  if (httpStatus === 429 || message.includes('rate limit') || message.includes('too many')) {
+    return 'rate_limited';
+  }
   if (
     message.includes('symbol') &&
     (message.includes('not found') || message.includes('invalid'))
@@ -55,6 +58,9 @@ export function classifyThrownError(error: unknown): CapabilityStatus {
   }
   if (error instanceof SyntaxError) {
     return 'malformed_provider_data';
+  }
+  if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+    return 'request_timeout';
   }
   return 'environment_unreachable';
 }

@@ -32,6 +32,9 @@ export const InstrumentSchema = z
     maxOrderQty: NullableStringLike.optional(),
     launchTime: NullableStringLike.optional(),
     maintainTime: NullableStringLike.optional(),
+    tradingPeriod: z
+      .union([z.array(z.union([z.string(), z.number()]).transform(String)), z.string()])
+      .optional(),
     buyLimitPriceRatio: NullableStringLike.optional(),
     sellLimitPriceRatio: NullableStringLike.optional(),
   })
@@ -137,6 +140,8 @@ export type BitgetFill = z.infer<typeof FillSchema>;
 export type BitgetStockInfo = z.infer<typeof StockInfoSchema>;
 export type BitgetMarket = z.infer<typeof MarketSchema>;
 export type BitgetCalendar = z.infer<typeof CalendarSchema>;
+
+export type BitgetCandle = z.infer<typeof CandleSchema>;
 
 export type BitgetResponse<T> = {
   code: string;

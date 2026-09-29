@@ -6,6 +6,8 @@ export const CapabilityStatusSchema = z.enum([
   'provider_rejected',
   'authentication_invalid',
   'whitelist_denied',
+  'rate_limited',
+  'request_timeout',
   'instrument_missing',
   'malformed_provider_data',
   'stale_data',

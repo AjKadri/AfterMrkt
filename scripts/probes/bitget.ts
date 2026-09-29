@@ -153,6 +153,31 @@ const comparisonSymbol = symbols[0];
 if (comparisonSymbol) {
   runs.push(
     await executeProbe({
+      capability: `bitget.historical-candles.${comparisonSymbol}`,
+      request: {
+        method: 'GET',
+        url: buildUrl('/api/v3/market/history-candles', {
+          category: 'SPOT',
+          symbol: comparisonSymbol,
+          interval: '1m',
+          limit: '10',
+        }),
+      },
+      action: async () =>
+        toCapture(
+          await client.get('/api/v3/market/history-candles', {
+            category: 'SPOT',
+            symbol: comparisonSymbol,
+            interval: '1m',
+            limit: '10',
+          }),
+        ),
+      normalize: normalizeCandles,
+      outputDirectory: evidenceDirectory,
+    }),
+  );
+  runs.push(
+    await executeProbe({
       capability: `bitget.orderbook.reality-specific.${comparisonSymbol}`,
       request: {
         method: 'GET',

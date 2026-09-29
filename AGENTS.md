@@ -38,4 +38,4 @@ Practical behavior for that principle:
 
 ## Phase boundary
 
-The current phase is repository foundation and external capability proof. It includes typed read-only probes for Bitget Reality public data, Bitget's U.S.-equities MCP, and Qwen `qwen3.8-max`. It does not include UI screens, wallets, live account connections, live trading, or product execution UX.
+The current phase is the read-only Bitget public market-data foundation and deterministic execution-quality engine. It includes normalized Reality instruments, public market snapshots, exact-decimal depth and exit simulation, backend contracts, and candidate reports. It does not include UI screens, wallets, live account connections, live trading, order submission, event/news ingestion, Qwen event reasoning, or historical replay.
