@@ -35,6 +35,7 @@ export async function executeProbe<T>(input: {
   let capture: ProbeCapture | undefined;
   let normalizedResponse: T | null = null;
   let capabilityResult: CapabilityResult;
+  let probeFailure: ProbeError | undefined;
 
   try {
     capture = await input.action();
@@ -46,10 +47,12 @@ export async function executeProbe<T>(input: {
     };
   } catch (error) {
     const probeError = error instanceof ProbeError ? error : undefined;
+    probeFailure = probeError;
+    const httpStatus = capture?.raw.status ?? probeError?.httpStatus;
     capabilityResult = {
       status: probeError?.status ?? classifyThrownError(error),
       reason: probeError?.message ?? (error instanceof Error ? error.message : String(error)),
-      ...(probeError?.httpStatus === undefined ? {} : { httpStatus: probeError.httpStatus }),
+      ...(httpStatus === undefined ? {} : { httpStatus }),
       ...(probeError?.providerCode === undefined ? {} : { providerCode: probeError.providerCode }),
       ...(probeError?.providerMessage === undefined
         ? {}
@@ -57,18 +60,20 @@ export async function executeProbe<T>(input: {
     };
   }
 
-  const rawResponse = capture?.raw.bodyText ?? '';
+  const failedRawResponse = probeFailure?.rawResponse;
+  const rawResponse = capture?.raw.bodyText ?? failedRawResponse?.bodyText ?? '';
   const record: ProbeRecord = {
     capability: input.capability,
     request: input.request,
-    endpoint: capture?.requestUrl ?? input.request.url,
+    endpoint: capture?.requestUrl ?? failedRawResponse?.url ?? input.request.url,
     startedAt,
-    receivedAt: capture?.raw.receivedAt ?? new Date().toISOString(),
+    receivedAt:
+      capture?.raw.receivedAt ?? failedRawResponse?.receivedAt ?? new Date().toISOString(),
     providerTimestamp: capture?.providerTimestamp ?? null,
     normalizedResponse,
     rawResponseHash: hashRawResponse(rawResponse),
     capabilityResult,
-    ...(capture ? { rawResponse } : {}),
+    ...(capture || failedRawResponse ? { rawResponse } : {}),
   };
   await writeProbeRecord(record, input.outputDirectory);
   return { record, normalizedResponse };
@@ -90,4 +95,12 @@ export function summarizeProbe(run: ProbeRun): {
 
 export function redactForSummary(value: string | undefined): string | null {
   return value ? 'configured' : null;
+}
+
+export function failureStatus(error: unknown): ProbeRecord['capabilityResult']['status'] {
+  return error instanceof ProbeError ? error.status : classifyThrownError(error);
+}
+
+export function failureReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

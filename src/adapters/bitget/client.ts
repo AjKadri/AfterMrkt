@@ -1,4 +1,4 @@
-import { classifyProviderFailure, ProbeError } from '../../lib/errors.js';
+import { ProbeError } from '../../lib/errors.js';
 import { joinUrl, parseJsonBody, requestRaw, type RawHttpResponse } from '../../lib/http.js';
 
 export const DEFAULT_BITGET_BASE_URL = 'https://api.bitget.com';
@@ -46,7 +46,7 @@ export class BitgetPublicClient {
     } catch (error) {
       throw new ProbeError(
         'environment_unreachable',
-        `Bitget request failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Bitget request failed: ${formatThrownError(error)}`,
       );
     }
 
@@ -57,29 +57,28 @@ export class BitgetPublicClient {
       throw new ProbeError(
         'malformed_provider_data',
         `Bitget returned non-JSON data: ${error instanceof Error ? error.message : String(error)}`,
-        { httpStatus: raw.status },
+        { httpStatus: raw.status, rawResponse: raw },
       );
-    }
-
-    if (raw.status < 200 || raw.status >= 300) {
-      throw providerResponseError(raw.status, json);
     }
 
     return { requestUrl: url.toString(), raw, json };
   }
 }
 
-function providerResponseError(httpStatus: number, json: unknown): ProbeError {
-  const record = asRecord(json);
-  const providerCode = typeof record?.code === 'string' ? record.code : undefined;
-  const providerMessage = typeof record?.msg === 'string' ? record.msg : undefined;
-  return new ProbeError(
-    classifyProviderFailure(httpStatus, providerCode, providerMessage),
-    `Bitget HTTP ${httpStatus}: ${providerMessage ?? 'provider rejected the request'}`,
-    { httpStatus, providerCode, providerMessage },
-  );
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+function formatThrownError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  const cause = 'cause' in error ? error.cause : undefined;
+  if (typeof cause === 'string') {
+    return `${error.message}; cause=${cause}`;
+  }
+  if (cause instanceof Error) {
+    const code = 'code' in cause ? cause.code : undefined;
+    return `${error.message}; cause=${cause.message || (typeof code === 'string' ? code : 'unknown')}`;
+  }
+  if (typeof cause === 'object' && cause !== null && 'code' in cause) {
+    return `${error.message}; cause=${String(cause.code)}`;
+  }
+  return error.message;
 }

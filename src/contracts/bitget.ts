@@ -63,7 +63,7 @@ export const PriceLevelSchema = z.array(StringLike).min(2);
 
 export const OrderBookSchema = z
   .object({
-    symbol: z.string(),
+    symbol: z.string().optional(),
     asks: z.array(PriceLevelSchema).optional(),
     bids: z.array(PriceLevelSchema).optional(),
     a: z.array(PriceLevelSchema).optional(),

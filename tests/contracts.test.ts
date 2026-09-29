@@ -84,7 +84,7 @@ describe('Bitget provider contracts', () => {
   it('rejects malformed provider JSON shapes', () => {
     expect(() =>
       normalizeInstruments({ code: '00000', msg: 'success', data: 'not-an-array' }),
-    ).toThrow('data');
+    ).toThrow('expected array');
   });
 
   it('classifies provider errors instead of treating them as successful data', () => {

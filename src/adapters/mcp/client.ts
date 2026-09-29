@@ -110,13 +110,14 @@ export class McpClient {
     } catch (error) {
       throw new ProbeError(
         'environment_unreachable',
-        `MCP request failed: ${error instanceof Error ? error.message : String(error)}`,
+        `MCP request failed: ${formatThrownError(error)}`,
       );
     }
 
     if (raw.status < 200 || raw.status >= 300) {
       throw new ProbeError('provider_rejected', `MCP HTTP ${raw.status}`, {
         httpStatus: raw.status,
+        rawResponse: raw,
       });
     }
     if (!expectsResponse) {
@@ -176,4 +177,22 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function isTool(value: unknown): value is McpTool {
   const record = asRecord(value);
   return typeof record?.name === 'string';
+}
+
+function formatThrownError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  const cause = 'cause' in error ? error.cause : undefined;
+  if (typeof cause === 'string') {
+    return `${error.message}; cause=${cause}`;
+  }
+  if (cause instanceof Error) {
+    const code = 'code' in cause ? cause.code : undefined;
+    return `${error.message}; cause=${cause.message || (typeof code === 'string' ? code : 'unknown')}`;
+  }
+  if (typeof cause === 'object' && cause !== null && 'code' in cause) {
+    return `${error.message}; cause=${String(cause.code)}`;
+  }
+  return error.message;
 }

@@ -21,20 +21,29 @@ import {
 import { classifyProviderFailure, ProbeError } from '../../lib/errors.js';
 
 export function parseBitgetResponse<T>(raw: unknown, dataSchema: z.ZodType<T>): BitgetResponse<T> {
-  const envelope = BitgetResponseBaseSchema.extend({ data: dataSchema }).safeParse(raw);
-  if (!envelope.success) {
-    throw new ProbeError('malformed_provider_data', formatZodError(envelope.error));
+  const baseEnvelope = BitgetResponseBaseSchema.extend({ data: z.unknown() }).safeParse(raw);
+  if (!baseEnvelope.success) {
+    throw new ProbeError('malformed_provider_data', formatZodError(baseEnvelope.error));
   }
 
-  if (envelope.data.code !== '00000') {
+  if (baseEnvelope.data.code !== '00000') {
     throw new ProbeError(
-      classifyProviderFailure(200, envelope.data.code, envelope.data.msg),
-      `Bitget provider error ${envelope.data.code}: ${envelope.data.msg}`,
-      { httpStatus: 200, providerCode: envelope.data.code, providerMessage: envelope.data.msg },
+      classifyProviderFailure(200, baseEnvelope.data.code, baseEnvelope.data.msg),
+      `Bitget provider error ${baseEnvelope.data.code}: ${baseEnvelope.data.msg}`,
+      {
+        httpStatus: 200,
+        providerCode: baseEnvelope.data.code,
+        providerMessage: baseEnvelope.data.msg,
+      },
     );
   }
 
-  return envelope.data as BitgetResponse<T>;
+  const dataResult = dataSchema.safeParse(baseEnvelope.data.data);
+  if (!dataResult.success) {
+    throw new ProbeError('malformed_provider_data', formatZodError(dataResult.error));
+  }
+
+  return { ...baseEnvelope.data, data: dataResult.data } as BitgetResponse<T>;
 }
 
 export function normalizeInstruments(raw: unknown): BitgetInstrument[] {
@@ -67,9 +76,17 @@ export function normalizeTicker(raw: unknown, expectedSymbol?: string): BitgetTi
 
 export function normalizeOrderBook(raw: unknown, expectedSymbol?: string): BitgetOrderBook {
   const response = parseBitgetResponse(raw, OrderBookSchema);
-  assertExactSymbol(response.data.symbol, expectedSymbol);
+  if (response.data.symbol) {
+    assertExactSymbol(response.data.symbol, expectedSymbol);
+  } else if (!expectedSymbol) {
+    throw new ProbeError(
+      'malformed_provider_data',
+      'Order-book response omitted the provider symbol',
+    );
+  }
   return {
     ...response.data,
+    symbol: response.data.symbol ?? expectedSymbol,
     bids: response.data.bids ?? response.data.b ?? [],
     asks: response.data.asks ?? response.data.a ?? [],
   };
@@ -97,8 +114,8 @@ export function normalizeStockInfo(raw: unknown): BitgetStockInfo[] {
 }
 
 export function normalizeMarketStates(raw: unknown): BitgetMarket[] {
-  const response = parseBitgetResponse(raw, z.array(MarketSchema));
-  return response.data;
+  const response = parseBitgetResponse(raw, z.union([z.array(MarketSchema), MarketSchema]));
+  return Array.isArray(response.data) ? response.data : [response.data];
 }
 
 export function normalizeCalendar(raw: unknown): BitgetCalendar {

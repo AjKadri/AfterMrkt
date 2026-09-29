@@ -1,7 +1,13 @@
 import { McpClient, type McpRequestResult, type McpTool } from '../../src/adapters/mcp/index.js';
+import { ProbeError } from '../../src/lib/errors.js';
 import { hashRawResponse, writeProbeRecord } from '../../src/observability/evidence.js';
 import type { ProbeRecord } from '../../src/probes/types.js';
-import { createEvidenceDirectory, redactForSummary } from './common.js';
+import {
+  createEvidenceDirectory,
+  failureReason,
+  failureStatus,
+  redactForSummary,
+} from './common.js';
 
 const client = new McpClient();
 const evidenceDirectory = await createEvidenceDirectory('mcp');
@@ -48,13 +54,25 @@ try {
     };
   }
 } catch (error) {
+  const status = failureStatus(error);
+  const reason = failureReason(error);
+  const rawResponse = error instanceof ProbeError ? error.rawResponse : undefined;
   failure = {
-    status:
-      error instanceof Error && 'status' in error
-        ? String((error as { status: unknown }).status)
-        : 'environment_unreachable',
-    reason: error instanceof Error ? error.message : String(error),
+    status,
+    reason,
   };
+  records.push({
+    capability: 'mcp.initialize.failure',
+    request: { method: 'POST', url: client.endpoint, body: { method: 'initialize' } },
+    endpoint: rawResponse?.url ?? client.endpoint,
+    startedAt,
+    receivedAt: rawResponse?.receivedAt ?? new Date().toISOString(),
+    providerTimestamp: null,
+    normalizedResponse: { status, reason },
+    rawResponseHash: hashRawResponse(rawResponse?.bodyText ?? ''),
+    capabilityResult: { status, reason },
+    ...(rawResponse ? { rawResponse: rawResponse.bodyText } : {}),
+  });
 }
 
 for (const record of records) {

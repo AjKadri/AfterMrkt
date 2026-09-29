@@ -1,10 +1,12 @@
 import type { CapabilityStatus } from '../probes/types.js';
+import type { RawHttpResponse } from './http.js';
 
 export class ProbeError extends Error {
   readonly status: CapabilityStatus;
   readonly httpStatus: number | undefined;
   readonly providerCode: string | undefined;
   readonly providerMessage: string | undefined;
+  readonly rawResponse: RawHttpResponse | undefined;
 
   constructor(
     status: CapabilityStatus,
@@ -13,6 +15,7 @@ export class ProbeError extends Error {
       httpStatus?: number | undefined;
       providerCode?: string | undefined;
       providerMessage?: string | undefined;
+      rawResponse?: RawHttpResponse | undefined;
     } = {},
   ) {
     super(message);
@@ -21,6 +24,7 @@ export class ProbeError extends Error {
     this.httpStatus = details.httpStatus;
     this.providerCode = details.providerCode;
     this.providerMessage = details.providerMessage;
+    this.rawResponse = details.rawResponse;
   }
 }
 

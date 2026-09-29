@@ -98,7 +98,12 @@ export class QwenClient {
       throw new ProbeError(
         raw.status === 401 || raw.status === 403 ? 'authentication_invalid' : 'provider_rejected',
         `Qwen HTTP ${raw.status}: ${details.message}`,
-        { httpStatus: raw.status, providerCode: details.code, providerMessage: details.message },
+        {
+          httpStatus: raw.status,
+          providerCode: details.code,
+          providerMessage: details.message,
+          rawResponse: raw,
+        },
       );
     }
 
@@ -113,7 +118,7 @@ export class QwenClient {
       throw new ProbeError(
         'malformed_provider_data',
         `Qwen returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-        { httpStatus: raw.status },
+        { httpStatus: raw.status, rawResponse: raw },
       );
     }
 
