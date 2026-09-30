@@ -81,11 +81,29 @@ describe('AfterMrkt API contracts', () => {
       );
       expect(response.status).toBe(200);
       const body = (await response.json()) as {
-        data: { instrument: { providerSymbol: string; nativeTicker: string | null } };
+        data: {
+          instrument: { providerSymbol: string; nativeTicker: string | null };
+          session: { status: string };
+          reference: { status: string };
+          move: { status: string };
+          market: { status: string };
+          liquidityContext: { positionStatus: string };
+          eventContext: { status: string };
+          nativePriceConfirmation: { status: string };
+          explanation: { headline: string };
+        };
         sourceRefs: Array<{ endpoint: string }>;
       };
       expect(body.data.instrument.providerSymbol).toBe('RMUUSDT');
       expect(body.data.instrument.nativeTicker).toBe('MU');
+      expect(body.data.session.status).toBe('unavailable');
+      expect(body.data.reference.status).toBe('unavailable');
+      expect(body.data.move.status).toBe('unavailable');
+      expect(body.data.market.status).toBe('available');
+      expect(body.data.liquidityContext.positionStatus).toBe('position_required');
+      expect(body.data.eventContext.status).toBe('insufficient-event-evidence');
+      expect(body.data.nativePriceConfirmation.status).toBe('unavailable');
+      expect(body.data.explanation.headline).toContain('context');
       expect(body.sourceRefs.every((ref) => ref.endpoint.startsWith('https://'))).toBe(true);
     } finally {
       server.close();
@@ -215,6 +233,23 @@ describe('AfterMrkt API contracts', () => {
       };
       expect(simulationBody.mode).toBe('REPLAY');
       expect(simulationBody.data.data.simulation.filledQuantity).toBe('5');
+
+      const contextResponse = await fetch(
+        `${baseUrl}/api/replays/${replayCase.manifest.caseId}/context`,
+      );
+      expect(contextResponse.status).toBe(200);
+      const contextBody = (await contextResponse.json()) as {
+        mode: string;
+        data: {
+          mode: string;
+          reference: { status: string };
+          liquidityContext: { status: string };
+        };
+      };
+      expect(contextBody.mode).toBe('REPLAY');
+      expect(contextBody.data.mode).toBe('REPLAY');
+      expect(contextBody.data.reference.status).toBe('unavailable');
+      expect(contextBody.data.liquidityContext.status).toBe('available');
     } finally {
       server.close();
       await once(server, 'close');

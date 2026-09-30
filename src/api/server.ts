@@ -12,7 +12,9 @@ import {
 } from '../contracts/api.js';
 import { freshnessFromSource } from '../domain/freshness.js';
 import { deriveEventContext, uncheckedEventContext } from '../domain/event-context.js';
-import { ReplayEngine, ReplayError } from '../domain/replay.js';
+import { deriveSessionContext } from '../domain/event-window.js';
+import { buildAfterMrktContext, type AfterMrktContext } from '../domain/market-context.js';
+import { EventReplayEngine, ReplayEngine, ReplayError } from '../domain/replay.js';
 import {
   calculateMarketMetrics,
   resolveMarketQualityConfig,
@@ -28,6 +30,7 @@ export type ApiServerOptions = {
   snapshots?: MarketSnapshotStore;
   replayStore?: CaptureStore;
   replayEngine?: ReplayEngine;
+  eventReplayEngine?: EventReplayEngine;
   eventStore?: CaptureStore;
   now?: () => Date;
   qualityConfig?: Partial<MarketQualityConfig>;
@@ -42,16 +45,25 @@ export function createApiServer(options: ApiServerOptions): Server {
     (options.replayStore === undefined
       ? null
       : new ReplayEngine(options.replayStore, options.qualityConfig));
+  const eventReplayEngine =
+    options.eventReplayEngine ??
+    (options.replayStore === undefined ? null : new EventReplayEngine(options.replayStore));
   const now = options.now ?? (() => new Date());
 
   return createServer((request, response) => {
-    void handleRequest(request, response, options, snapshots, replayEngine, now).catch(
-      (error: unknown) => {
-        const mapped = mapError(error);
-        const mode = (request.url ?? '').startsWith('/api/replays') ? 'REPLAY' : 'LIVE';
-        sendError(response, now(), mapped.code, mapped.message, mapped.status, [], mode);
-      },
-    );
+    void handleRequest(
+      request,
+      response,
+      options,
+      snapshots,
+      replayEngine,
+      eventReplayEngine,
+      now,
+    ).catch((error: unknown) => {
+      const mapped = mapError(error);
+      const mode = (request.url ?? '').startsWith('/api/replays') ? 'REPLAY' : 'LIVE';
+      sendError(response, now(), mapped.code, mapped.message, mapped.status, [], mode);
+    });
   });
 }
 
@@ -61,6 +73,7 @@ async function handleRequest(
   options: ApiServerOptions,
   snapshots: MarketSnapshotStore,
   replayEngine: ReplayEngine | null,
+  eventReplayEngine: EventReplayEngine | null,
   now: () => Date,
 ): Promise<void> {
   const method = request.method ?? 'GET';
@@ -74,6 +87,17 @@ async function handleRequest(
 
   if (method === 'GET' && parts.length === 3 && parts[0] === 'api' && parts[1] === 'replays') {
     await sendReplayCase(response, replayEngine, now, parts[2] ?? '');
+    return;
+  }
+
+  if (
+    method === 'GET' &&
+    parts.length === 4 &&
+    parts[0] === 'api' &&
+    parts[1] === 'replays' &&
+    parts[3] === 'context'
+  ) {
+    await sendReplayContext(response, replayEngine, eventReplayEngine, now, parts[2] ?? '');
     return;
   }
 
@@ -171,112 +195,85 @@ async function sendContext(
     sendError(response, now(), 'INSTRUMENT_NOT_FOUND', `instrument ${symbol} was not found`, 404);
     return;
   }
-  const [ticker, orderBook] = await Promise.all([
-    options.marketData.getTicker(symbol),
-    options.marketData.getOrderBook(symbol),
+  const asOf = now();
+  const [ticker, orderBook, marketState, marketCalendar] = await Promise.all([
+    safeProviderCall(() => options.marketData.getTicker(symbol)),
+    safeProviderCall(() => options.marketData.getOrderBook(symbol)),
+    safeProviderCall(() => options.marketData.getMarketStates()),
+    safeProviderCall(() => options.marketData.getMarketCalendar()),
   ]);
-  let marketState: Awaited<ReturnType<PublicMarketDataProvider['getMarketStates']>> | null = null;
-  let marketCalendar: Awaited<ReturnType<PublicMarketDataProvider['getMarketCalendar']>> | null =
-    null;
-  let companyOverview: Awaited<ReturnType<PublicMarketDataProvider['getCompanyOverview']>> | null =
-    null;
-  let suspension: Awaited<
-    ReturnType<NonNullable<PublicMarketDataProvider['getSuspensionResumptionInfo']>>
-  > | null = null;
-  try {
-    marketState = await options.marketData.getMarketStates();
-  } catch (error) {
-    void error;
-  }
-  try {
-    marketCalendar = await options.marketData.getMarketCalendar();
-  } catch (error) {
-    void error;
-  }
-  try {
-    companyOverview = await options.marketData.getCompanyOverview(
-      instrument.nativeTicker ?? undefined,
-    );
-  } catch (error) {
-    void error;
-  }
-  if (
-    instrument.nativeTicker !== null &&
-    options.marketData.getSuspensionResumptionInfo !== undefined
-  ) {
-    try {
-      suspension = await options.marketData.getSuspensionResumptionInfo(instrument.nativeTicker);
-    } catch (error) {
-      void error;
-    }
-  }
-  const eventContext = await contextForInstrument(
-    options.eventStore ?? options.replayStore,
-    symbol,
-    now(),
-    marketState?.data ?? null,
-    marketCalendar?.data ?? null,
-  );
-  const snapshot = snapshots.saveOrderBook(orderBook.data);
-  const metrics = calculateMarketMetrics(
-    snapshot,
-    now(),
-    resolveMarketQualityConfig(options.qualityConfig),
-  );
-  const freshness = freshnessFromSource(orderBook.source, now());
-  sendEnvelope(response, {
-    mode: 'LIVE',
-    asOf: orderBook.source.providerTimestamp ?? orderBook.source.receivedAt,
-    freshness,
-    data: {
-      instrument,
-      ticker: ticker.data,
-      snapshot,
-      metrics,
-      marketState: marketState?.data ?? null,
-      marketCalendar: marketCalendar?.data ?? null,
-      companyOverview: companyOverview?.data ?? null,
-      suspension: suspension?.data ?? null,
-      eventContext,
-    },
-    sourceRefs: [
-      toSourceReference(universe.source, symbol, null),
-      toSourceReference(ticker.source, symbol, null),
-      toSourceReference(orderBook.source, symbol, snapshot.snapshotId),
-      ...(marketState === null ? [] : [toSourceReference(marketState.source, null, null)]),
-      ...(marketCalendar === null ? [] : [toSourceReference(marketCalendar.source, null, null)]),
-      ...(companyOverview === null
-        ? []
-        : [toSourceReference(companyOverview.source, symbol, null)]),
-      ...(suspension === null ? [] : [toSourceReference(suspension.source, symbol, null)]),
-    ],
-    warnings: [
-      ...freshnessWarnings(freshness),
-      ...(marketState === null ? ['Market state was unavailable for this context response.'] : []),
-      ...(marketCalendar === null
-        ? ['Market calendar was unavailable for this context response.']
-        : []),
-    ],
+  const getSuspension = options.marketData.getSuspensionResumptionInfo;
+  const suspension =
+    instrument.nativeTicker !== null && getSuspension !== undefined
+      ? await safeProviderCall(() => getSuspension(instrument.nativeTicker as string))
+      : null;
+  const sessionSchedule = deriveSessionContext({
+    asOf: asOf.toISOString(),
+    markets: marketState?.data ?? null,
+    calendar: marketCalendar?.data ?? null,
   });
-}
-
-async function contextForInstrument(
-  store: CaptureStore | undefined,
-  symbol: string,
-  asOf: Date,
-  markets: Awaited<ReturnType<PublicMarketDataProvider['getMarketStates']>>['data'] | null,
-  calendar: Awaited<ReturnType<PublicMarketDataProvider['getMarketCalendar']>>['data'] | null,
-) {
-  if (store === undefined) return uncheckedEventContext(asOf.toISOString());
-  const events = await store.listSourceEvents(symbol);
-  const analyses = await store.listEventAnalyses();
-  return deriveEventContext({
+  const historicalCandles =
+    sessionSchedule.previousRegularSessionClose === null
+      ? null
+      : await safeProviderCall(() =>
+          options.marketData.getHistoricalCandles(symbol, {
+            interval: '1m',
+            limit: 100,
+            endTime: String(Date.parse(sessionSchedule.previousRegularSessionClose as string)),
+          }),
+        );
+  const store = options.eventStore ?? options.replayStore;
+  const events = store === undefined ? [] : await store.listSourceEvents(symbol);
+  const analyses = store === undefined ? [] : await store.listEventAnalyses();
+  const snapshot = orderBook === null ? null : snapshots.saveOrderBook(orderBook.data);
+  const sourceRefs = [
+    toSourceReference(universe.source, symbol, null),
+    ...(ticker === null ? [] : [toSourceReference(ticker.source, symbol, null)]),
+    ...(orderBook === null || snapshot === null
+      ? []
+      : [toSourceReference(orderBook.source, symbol, snapshot.snapshotId)]),
+    ...(marketState === null ? [] : [toSourceReference(marketState.source, null, null)]),
+    ...(marketCalendar === null ? [] : [toSourceReference(marketCalendar.source, null, null)]),
+    ...(suspension === null
+      ? []
+      : [toSourceReference(suspension.source, instrument.nativeTicker, null)]),
+    ...(historicalCandles === null
+      ? []
+      : [toSourceReference(historicalCandles.source, symbol, null)]),
+  ];
+  const session = buildAfterMrktContext({
+    mode: 'LIVE',
+    asOf: asOf.toISOString(),
+    providerSymbol: symbol,
+    instrument,
+    ticker: ticker?.data ?? null,
+    orderBook: snapshot,
+    markets: marketState?.data ?? null,
+    calendar: marketCalendar?.data ?? null,
+    suspension: suspension?.data ?? null,
+    suspensionStatus: suspension?.data.recordStatus ?? 'unavailable',
+    candles:
+      historicalCandles === null
+        ? null
+        : {
+            data: historicalCandles.data,
+            interval: '1m',
+            source: historicalCandles.source,
+            sourceRef: toSourceReference(historicalCandles.source, symbol, null),
+          },
     events,
     analyses,
-    contextAsOf: asOf.toISOString(),
-    markets,
-    calendar,
-    checkedAt: asOf.toISOString(),
+    sourceRefs,
+    ...(store === undefined ? { eventSourceAvailable: false } : {}),
+    ...(options.qualityConfig === undefined ? {} : { qualityConfig: options.qualityConfig }),
+  });
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: session.asOf,
+    freshness: contextFreshness(session),
+    data: session,
+    sourceRefs: session.sourceRefs,
+    warnings: session.warnings,
   });
 }
 
@@ -578,6 +575,46 @@ async function sendReplayCase(
   });
 }
 
+async function sendReplayContext(
+  response: ServerResponse,
+  replayEngine: ReplayEngine | null,
+  eventReplayEngine: EventReplayEngine | null,
+  now: () => Date,
+  caseId: string,
+): Promise<void> {
+  let context: AfterMrktContext | null = null;
+  if (eventReplayEngine !== null) {
+    try {
+      context = await eventReplayEngine.context(caseId);
+    } catch (error) {
+      if (!(error instanceof ReplayError) || error.code !== 'replay_case_not_found') throw error;
+    }
+  }
+  if (context === null && replayEngine !== null) {
+    context = await replayEngine.context(caseId);
+  }
+  if (context === null) {
+    sendError(
+      response,
+      now(),
+      'REPLAY_CASE_NOT_FOUND',
+      `replay case ${caseId} was not found`,
+      404,
+      [],
+      'REPLAY',
+    );
+    return;
+  }
+  sendEnvelope(response, {
+    mode: 'REPLAY',
+    asOf: context.asOf,
+    freshness: contextFreshness(context),
+    data: context,
+    sourceRefs: context.sourceRefs,
+    warnings: context.warnings,
+  });
+}
+
 async function sendReplaySimulation(
   response: ServerResponse,
   request: IncomingMessage,
@@ -715,6 +752,19 @@ function freshnessWarnings(freshness: ReturnType<typeof freshnessFromSource>): s
   return freshness.state === 'fresh'
     ? []
     : [`Market data is ${freshness.state}: ${freshness.reason}`];
+}
+
+function contextFreshness(context: AfterMrktContext) {
+  return context.liquidityContext.metrics?.freshness ?? context.market.freshness;
+}
+
+async function safeProviderCall<T>(call: () => Promise<T>): Promise<T | null> {
+  try {
+    return await call();
+  } catch (error) {
+    void error;
+    return null;
+  }
 }
 
 function unavailableFreshness(reason: string) {

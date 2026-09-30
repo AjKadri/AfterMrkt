@@ -10,18 +10,22 @@ import {
   type MarketQualityConfig,
 } from './market-quality.js';
 import { freshnessFromSource } from './freshness.js';
+import { buildAfterMrktContext, type AfterMrktContext } from './market-context.js';
 import type { SourceMetadata, SourceReference } from './types.js';
 import type {
   CaptureStore,
   EventReplayCase,
   EventReplayManifest,
+  HistoricalCandleSnapshot,
+  MarketCalendarSnapshot,
   MarketSnapshot,
   MarketStateSnapshot,
   ReplayCase,
   ReplayManifest,
   ReplaySourceReference,
 } from '../persistence/types.js';
-import type { OrderBookSnapshot } from './types.js';
+import type { NormalizedTicker, OrderBookSnapshot } from './types.js';
+import type { NormalizedRealityInstrument } from './types.js';
 
 export type ReplayManifestInput = {
   caseId?: string;
@@ -32,6 +36,9 @@ export type ReplayManifestInput = {
   orderBookSnapshot: OrderBookSnapshot;
   marketStateSnapshot: MarketStateSnapshot | null;
   sourceEvents?: SourceEvent[];
+  instrument?: NormalizedRealityInstrument;
+  marketCalendarSnapshot?: MarketCalendarSnapshot | null;
+  historicalCandleSnapshot?: HistoricalCandleSnapshot | null;
   manifestCreatedAt: string;
 };
 
@@ -68,6 +75,10 @@ export type EventReplayManifestInput = {
   nativeTicker: string | null;
   replayAsOf: string;
   sourceEvents: SourceEvent[];
+  instrument?: NormalizedRealityInstrument;
+  marketStateSnapshot?: MarketStateSnapshot | null;
+  marketCalendarSnapshot?: MarketCalendarSnapshot | null;
+  historicalCandleSnapshot?: HistoricalCandleSnapshot | null;
   manifestCreatedAt: string;
 };
 
@@ -103,6 +114,12 @@ export function createReplayCase(input: ReplayManifestInput): ReplayCase {
     ...(input.marketStateSnapshot === null
       ? []
       : [replaySourceFromMarketState(input.marketStateSnapshot)]),
+    ...(input.marketCalendarSnapshot === null || input.marketCalendarSnapshot === undefined
+      ? []
+      : [replaySourceFromMarketCalendar(input.marketCalendarSnapshot)]),
+    ...(input.historicalCandleSnapshot === null || input.historicalCandleSnapshot === undefined
+      ? []
+      : [replaySourceFromHistoricalCandles(input.historicalCandleSnapshot)]),
   ];
   assertSourcesAvailableBy(input.replayAsOf, sources);
   const caseId =
@@ -114,6 +131,9 @@ export function createReplayCase(input: ReplayManifestInput): ReplayCase {
         marketSnapshotId: input.marketSnapshot.snapshotId,
         orderBookSnapshotId: input.orderBookSnapshot.snapshotId,
         marketStateSnapshotId: input.marketStateSnapshot?.snapshotId ?? null,
+        marketCalendarSnapshotId: input.marketCalendarSnapshot?.snapshotId ?? null,
+        historicalCandleSnapshotId: input.historicalCandleSnapshot?.snapshotId ?? null,
+        instrument: input.instrument ?? null,
         eventIds: qualifyingEventIds(input.sourceEvents ?? [], input.replayAsOf),
       }),
     );
@@ -126,6 +146,13 @@ export function createReplayCase(input: ReplayManifestInput): ReplayCase {
     marketSnapshotId: input.marketSnapshot.snapshotId,
     orderBookSnapshotId: input.orderBookSnapshot.snapshotId,
     marketStateSnapshotId: input.marketStateSnapshot?.snapshotId ?? null,
+    ...(input.marketCalendarSnapshot === null || input.marketCalendarSnapshot === undefined
+      ? {}
+      : { marketCalendarSnapshotId: input.marketCalendarSnapshot.snapshotId }),
+    ...(input.historicalCandleSnapshot === null || input.historicalCandleSnapshot === undefined
+      ? {}
+      : { historicalCandleSnapshotId: input.historicalCandleSnapshot.snapshotId }),
+    ...(input.instrument === undefined ? {} : { instrument: input.instrument }),
     sources,
     eventIds,
     manifestCreatedAt: input.manifestCreatedAt,
@@ -149,6 +176,10 @@ export function createEventReplayCase(input: EventReplayManifestInput): EventRep
       nativeTicker: input.nativeTicker,
       replayAsOf: input.replayAsOf,
       eventIds,
+      instrument: input.instrument ?? null,
+      marketStateSnapshotId: input.marketStateSnapshot?.snapshotId ?? null,
+      marketCalendarSnapshotId: input.marketCalendarSnapshot?.snapshotId ?? null,
+      historicalCandleSnapshotId: input.historicalCandleSnapshot?.snapshotId ?? null,
     }),
   );
   const withoutHash = {
@@ -157,6 +188,16 @@ export function createEventReplayCase(input: EventReplayManifestInput): EventRep
     nativeTicker: input.nativeTicker,
     replayAsOf: input.replayAsOf,
     eventIds,
+    ...(input.instrument === undefined ? {} : { instrument: input.instrument }),
+    ...(input.marketStateSnapshot === undefined
+      ? {}
+      : { marketStateSnapshotId: input.marketStateSnapshot?.snapshotId ?? null }),
+    ...(input.marketCalendarSnapshot === undefined
+      ? {}
+      : { marketCalendarSnapshotId: input.marketCalendarSnapshot?.snapshotId ?? null }),
+    ...(input.historicalCandleSnapshot === undefined
+      ? {}
+      : { historicalCandleSnapshotId: input.historicalCandleSnapshot?.snapshotId ?? null }),
     manifestCreatedAt: input.manifestCreatedAt,
   } satisfies Omit<EventReplayManifest, 'manifestHash'>;
   return {
@@ -222,6 +263,116 @@ export class EventReplayEngine {
         'Source availability and analysis processing time are kept separate.',
       ],
     };
+  }
+
+  async context(caseId: string): Promise<AfterMrktContext> {
+    const replayCase = await this.store.getEventReplayCase(caseId);
+    if (replayCase === null) {
+      throw new ReplayError('replay_case_not_found', `event replay case ${caseId} was not found`);
+    }
+    assertEventReplayManifestHash(replayCase.manifest);
+    const events = await this.loadEvents(replayCase.manifest);
+    const allAnalyses = (
+      await Promise.all(events.map((event) => this.store.listEventAnalyses(event.eventId)))
+    ).flat();
+    const [marketStateSnapshot, marketCalendarSnapshot, historicalCandleSnapshot] =
+      await Promise.all([
+        replayCase.manifest.marketStateSnapshotId === undefined ||
+        replayCase.manifest.marketStateSnapshotId === null
+          ? Promise.resolve(null)
+          : this.store.getMarketStateSnapshot(replayCase.manifest.marketStateSnapshotId),
+        replayCase.manifest.marketCalendarSnapshotId === undefined ||
+        replayCase.manifest.marketCalendarSnapshotId === null
+          ? Promise.resolve(null)
+          : this.store.getMarketCalendarSnapshot(replayCase.manifest.marketCalendarSnapshotId),
+        replayCase.manifest.historicalCandleSnapshotId === undefined ||
+        replayCase.manifest.historicalCandleSnapshotId === null
+          ? Promise.resolve(null)
+          : this.store.getHistoricalCandleSnapshot(replayCase.manifest.historicalCandleSnapshotId),
+      ]);
+    if (
+      (replayCase.manifest.marketStateSnapshotId != null && marketStateSnapshot === null) ||
+      (replayCase.manifest.marketCalendarSnapshotId != null && marketCalendarSnapshot === null) ||
+      (replayCase.manifest.historicalCandleSnapshotId != null && historicalCandleSnapshot === null)
+    ) {
+      throw new ReplayError(
+        'replay_snapshot_not_found',
+        'event replay manifest references a missing context snapshot',
+      );
+    }
+    const sourceRefs = [
+      ...instrumentSourceReferences(replayCase.manifest.instrument),
+      ...(marketStateSnapshot === null
+        ? []
+        : [
+            sourceReferenceFromMetadata(
+              marketStateSnapshot.source,
+              null,
+              marketStateSnapshot.snapshotId,
+            ),
+          ]),
+      ...(marketCalendarSnapshot === null
+        ? []
+        : [
+            sourceReferenceFromMetadata(
+              marketCalendarSnapshot.source,
+              null,
+              marketCalendarSnapshot.snapshotId,
+            ),
+          ]),
+      ...(historicalCandleSnapshot === null
+        ? []
+        : [
+            sourceReferenceFromMetadata(
+              historicalCandleSnapshot.source,
+              historicalCandleSnapshot.providerSymbol,
+              historicalCandleSnapshot.snapshotId,
+            ),
+          ]),
+    ];
+    return buildAfterMrktContext({
+      mode: 'REPLAY',
+      asOf: replayCase.manifest.replayAsOf,
+      providerSymbol: replayCase.manifest.providerSymbol,
+      instrument: replayCase.manifest.instrument ?? null,
+      ticker: null,
+      orderBook: null,
+      markets: marketStateSnapshot?.data ?? null,
+      calendar: marketCalendarSnapshot?.data ?? null,
+      suspension: null,
+      suspensionStatus: 'unavailable',
+      candles:
+        historicalCandleSnapshot === null
+          ? null
+          : {
+              data: historicalCandleSnapshot.data,
+              interval: historicalCandleSnapshot.interval,
+              source: historicalCandleSnapshot.source,
+              sourceRef:
+                sourceRefs.find(
+                  (source) => source.snapshotId === historicalCandleSnapshot.snapshotId,
+                ) ?? null,
+            },
+      events,
+      analyses: allAnalyses,
+      sourceRefs,
+    });
+  }
+
+  private async loadEvents(manifest: EventReplayManifest): Promise<SourceEvent[]> {
+    const events = await Promise.all(
+      manifest.eventIds.map((eventId) => this.store.getSourceEvent(eventId)),
+    );
+    const missingEventId = manifest.eventIds.find((_, index) => events[index] === null);
+    if (missingEventId !== undefined) {
+      throw new ReplayError(
+        'replay_snapshot_not_found',
+        `event replay manifest references a missing source event ${missingEventId}`,
+      );
+    }
+    const resolvedEvents = events.filter((event): event is SourceEvent => event !== null);
+    assertEventsAvailableBy(manifest.replayAsOf, resolvedEvents);
+    return resolvedEvents;
   }
 }
 
@@ -340,6 +491,107 @@ export class ReplayEngine {
     };
   }
 
+  async context(caseId: string): Promise<AfterMrktContext> {
+    const replayCase = await this.store.getReplayCase(caseId);
+    if (replayCase === null) {
+      throw new ReplayError('replay_case_not_found', `replay case ${caseId} was not found`);
+    }
+    const { manifest } = replayCase;
+    assertManifestHash(manifest);
+    assertSourcesAvailableBy(manifest.replayAsOf, manifest.sources);
+    const events = await this.loadReplayEvents(manifest);
+    const [
+      marketSnapshot,
+      orderBookSnapshot,
+      marketStateSnapshot,
+      marketCalendarSnapshot,
+      historicalCandleSnapshot,
+      allAnalyses,
+    ] = await Promise.all([
+      this.store.getMarketSnapshot(manifest.marketSnapshotId),
+      this.store.getOrderBook(manifest.orderBookSnapshotId),
+      manifest.marketStateSnapshotId === null
+        ? Promise.resolve(null)
+        : this.store.getMarketStateSnapshot(manifest.marketStateSnapshotId),
+      manifest.marketCalendarSnapshotId == null
+        ? Promise.resolve(null)
+        : this.store.getMarketCalendarSnapshot(manifest.marketCalendarSnapshotId),
+      manifest.historicalCandleSnapshotId == null
+        ? Promise.resolve(null)
+        : this.store.getHistoricalCandleSnapshot(manifest.historicalCandleSnapshotId),
+      Promise.all(events.map((event) => this.store.listEventAnalyses(event.eventId))).then(
+        (groups) => groups.flat(),
+      ),
+    ]);
+    if (marketSnapshot === null || orderBookSnapshot === null) {
+      throw new ReplayError(
+        'replay_snapshot_not_found',
+        'replay manifest references a missing immutable market snapshot',
+      );
+    }
+    if (
+      (manifest.marketStateSnapshotId !== null && marketStateSnapshot === null) ||
+      (manifest.marketCalendarSnapshotId != null && marketCalendarSnapshot === null) ||
+      (manifest.historicalCandleSnapshotId != null && historicalCandleSnapshot === null)
+    ) {
+      throw new ReplayError(
+        'replay_snapshot_not_found',
+        'replay manifest references a missing context snapshot',
+      );
+    }
+    const ticker: NormalizedTicker = { ...marketSnapshot };
+    const sourceRefs = [
+      ...instrumentSourceReferences(manifest.instrument),
+      ...manifest.sources.map(toSourceReference),
+      ...(marketCalendarSnapshot === null
+        ? []
+        : [
+            sourceReferenceFromMetadata(
+              marketCalendarSnapshot.source,
+              null,
+              marketCalendarSnapshot.snapshotId,
+            ),
+          ]),
+      ...(historicalCandleSnapshot === null
+        ? []
+        : [
+            sourceReferenceFromMetadata(
+              historicalCandleSnapshot.source,
+              historicalCandleSnapshot.providerSymbol,
+              historicalCandleSnapshot.snapshotId,
+            ),
+          ]),
+    ];
+    return buildAfterMrktContext({
+      mode: 'REPLAY',
+      asOf: manifest.replayAsOf,
+      providerSymbol: manifest.providerSymbol,
+      instrument: manifest.instrument ?? null,
+      ticker,
+      orderBook: orderBookSnapshot,
+      markets: marketStateSnapshot?.data ?? null,
+      calendar: marketCalendarSnapshot?.data ?? null,
+      suspension: null,
+      suspensionStatus: 'unavailable',
+      candles:
+        historicalCandleSnapshot === null
+          ? null
+          : {
+              data: historicalCandleSnapshot.data,
+              interval: historicalCandleSnapshot.interval,
+              source: historicalCandleSnapshot.source,
+              sourceRef:
+                sourceRefs.find(
+                  (source) => source.snapshotId === historicalCandleSnapshot.snapshotId,
+                ) ?? null,
+            },
+      events,
+      analyses: allAnalyses,
+      sourceRefs,
+      ...(this.qualityConfig === undefined ? {} : { qualityConfig: this.qualityConfig }),
+    });
+  }
+
   private async loadReplayEvents(manifest: ReplayManifest): Promise<SourceEvent[]> {
     const eventIds = manifest.eventIds ?? [];
     const events = await Promise.all(eventIds.map((eventId) => this.store.getSourceEvent(eventId)));
@@ -398,6 +650,26 @@ function replaySourceFromMarketState(snapshot: MarketStateSnapshot): ReplaySourc
   };
 }
 
+function replaySourceFromMarketCalendar(snapshot: MarketCalendarSnapshot): ReplaySourceReference {
+  return {
+    ...sourceReferenceFromMetadata(snapshot.source, null, snapshot.snapshotId),
+    snapshotId: snapshot.snapshotId,
+    sourceAvailableAt: snapshot.receivedAt,
+    captureTimestamp: snapshot.receivedAt,
+  };
+}
+
+function replaySourceFromHistoricalCandles(
+  snapshot: HistoricalCandleSnapshot,
+): ReplaySourceReference {
+  return {
+    ...sourceReferenceFromMetadata(snapshot.source, snapshot.providerSymbol, snapshot.snapshotId),
+    snapshotId: snapshot.snapshotId,
+    sourceAvailableAt: snapshot.receivedAt,
+    captureTimestamp: snapshot.receivedAt,
+  };
+}
+
 function toSourceReference(source: ReplaySourceReference): SourceReference {
   return {
     provider: source.provider,
@@ -415,7 +687,7 @@ function toSourceReference(source: ReplaySourceReference): SourceReference {
 function sourceReferenceFromMetadata(
   source: SourceMetadata,
   providerSymbol: string | null,
-  snapshotId: string,
+  snapshotId: string | null,
 ): SourceReference {
   return {
     provider: source.provider,
@@ -428,6 +700,18 @@ function sourceReferenceFromMetadata(
     providerTimestamp: source.providerTimestamp,
     receivedAt: source.receivedAt,
   };
+}
+
+function instrumentSourceReferences(
+  instrument: NormalizedRealityInstrument | undefined,
+): SourceReference[] {
+  if (instrument === undefined) return [];
+  return [
+    sourceReferenceFromMetadata(instrument.source, instrument.providerSymbol, null),
+    ...(instrument.mappingSource === null
+      ? []
+      : [sourceReferenceFromMetadata(instrument.mappingSource, instrument.providerSymbol, null)]),
+  ];
 }
 
 function assertSourcesAvailableBy(replayAsOf: string, sources: ReplaySourceReference[]): void {

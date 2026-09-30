@@ -14,6 +14,18 @@ export type EventWindowResult = {
 
 const DEFAULT_MARKET = 'US';
 
+export type SessionContextResult = {
+  status: 'open' | 'closed' | 'unavailable';
+  calendarStatus: 'regular-day' | 'weekend' | 'holiday' | 'unknown';
+  market: string;
+  timeZone: string | null;
+  regularSessionOpen: string | null;
+  regularSessionClose: string | null;
+  previousRegularSessionClose: string | null;
+  nextRegularSessionOpen: string | null;
+  reason: string;
+};
+
 /**
  * The provider currently describes the US session with EST/EDT metadata. We
  * use the IANA zone for calendar arithmetic so daylight-saving transitions do
@@ -133,7 +145,7 @@ export function resolveNextRegularSessionOpen(
   if (timeZone === null) return null;
   const baseDate = localDateParts(afterAsOf, timeZone);
   if (baseDate === null) return null;
-  for (let offset = 1; offset <= 14; offset += 1) {
+  for (let offset = 0; offset <= 14; offset += 1) {
     const isoDate = addIsoDays(baseDate.isoDate, offset);
     const candidateDate = localDateParts(`${isoDate}T12:00:00.000Z`, timeZone);
     if (
@@ -147,6 +159,149 @@ export function resolveNextRegularSessionOpen(
     if (open !== null && Date.parse(open) > Date.parse(afterAsOf)) return open;
   }
   return null;
+}
+
+/**
+ * Derive session state only from a complete provider schedule. The context
+ * engine deliberately does not fill missing calendar fields with production
+ * assumptions.
+ */
+export function deriveSessionContext(input: {
+  asOf: string;
+  markets: BitgetMarket[] | null;
+  calendar: BitgetCalendar | null;
+  market?: string;
+}): SessionContextResult {
+  const market = input.market ?? DEFAULT_MARKET;
+  const schedule = resolveRegularSessionSchedule(input.markets, input.calendar, market);
+  const unavailable = (reason: string): SessionContextResult => ({
+    status: 'unavailable',
+    calendarStatus: 'unknown',
+    market,
+    timeZone: schedule?.timeZone ?? null,
+    regularSessionOpen: null,
+    regularSessionClose: null,
+    previousRegularSessionClose: null,
+    nextRegularSessionOpen: null,
+    reason,
+  });
+  const asOfMs = Date.parse(input.asOf);
+  if (!Number.isFinite(asOfMs)) return unavailable('context timestamp is invalid');
+  if (schedule === null) {
+    return unavailable('provider market state or calendar schedule is incomplete');
+  }
+  const localDate = localDateParts(input.asOf, schedule.timeZone);
+  if (localDate === null) return unavailable('context local date could not be derived');
+  const calendarStatus = isTradingWeekday(localDate.weekday, input.calendar?.regularConfig)
+    ? isClosedBySpecificCalendar(localDate.isoDate, input.calendar)
+      ? 'holiday'
+      : 'regular-day'
+    : 'weekend';
+  const currentOpen =
+    calendarStatus === 'regular-day'
+      ? zonedLocalTimestamp(
+          localDate.isoDate,
+          schedule.start.hours,
+          schedule.start.minutes,
+          schedule.start.seconds,
+          schedule.timeZone,
+        )
+      : null;
+  const currentClose =
+    calendarStatus === 'regular-day'
+      ? zonedLocalTimestamp(
+          localDate.isoDate,
+          schedule.end.hours,
+          schedule.end.minutes,
+          schedule.end.seconds,
+          schedule.timeZone,
+        )
+      : null;
+  const previousClose = resolvePreviousRegularSessionClose(
+    input.asOf,
+    input.markets,
+    input.calendar,
+    market,
+  );
+  const nextOpen = resolveNextRegularSessionOpen(input.asOf, input.markets, input.calendar, market);
+  const openMs = currentOpen === null ? null : Date.parse(currentOpen);
+  const closeMs = currentClose === null ? null : Date.parse(currentClose);
+  const status =
+    calendarStatus === 'regular-day' &&
+    openMs !== null &&
+    closeMs !== null &&
+    Number.isFinite(openMs) &&
+    Number.isFinite(closeMs) &&
+    asOfMs >= openMs &&
+    asOfMs < closeMs
+      ? 'open'
+      : 'closed';
+  return {
+    status,
+    calendarStatus,
+    market,
+    timeZone: schedule.timeZone,
+    regularSessionOpen: currentOpen,
+    regularSessionClose: currentClose,
+    previousRegularSessionClose: previousClose,
+    nextRegularSessionOpen: nextOpen,
+    reason:
+      status === 'open'
+        ? 'context time is within the provider-defined regular session'
+        : `context time is outside the provider-defined regular session (${calendarStatus})`,
+  };
+}
+
+export function resolvePreviousRegularSessionClose(
+  asOf: string,
+  markets: BitgetMarket[] | null,
+  calendar: BitgetCalendar | null,
+  market = DEFAULT_MARKET,
+): string | null {
+  const schedule = resolveRegularSessionSchedule(markets, calendar, market);
+  if (schedule === null || !Number.isFinite(Date.parse(asOf))) return null;
+  const baseDate = localDateParts(asOf, schedule.timeZone);
+  if (baseDate === null) return null;
+  for (let offset = 0; offset <= 14; offset += 1) {
+    const isoDate = addIsoDays(baseDate.isoDate, -offset);
+    const candidateDate = localDateParts(`${isoDate}T12:00:00.000Z`, schedule.timeZone);
+    if (
+      candidateDate === null ||
+      !isTradingWeekday(candidateDate.weekday, calendar?.regularConfig) ||
+      isClosedBySpecificCalendar(isoDate, calendar)
+    ) {
+      continue;
+    }
+    const close = zonedLocalTimestamp(
+      isoDate,
+      schedule.end.hours,
+      schedule.end.minutes,
+      schedule.end.seconds,
+      schedule.timeZone,
+    );
+    if (close !== null && Date.parse(close) <= Date.parse(asOf)) return close;
+  }
+  return null;
+}
+
+export function resolveRegularSessionSchedule(
+  markets: BitgetMarket[] | null,
+  calendar: BitgetCalendar | null,
+  market = DEFAULT_MARKET,
+): {
+  timeZone: string;
+  start: { hours: number; minutes: number; seconds: number };
+  end: { hours: number; minutes: number; seconds: number };
+} | null {
+  if (markets === null || calendar === null || calendar.regularConfig === undefined) return null;
+  const marketRecord = markets.find((item) => item.market.toUpperCase() === market.toUpperCase());
+  const regular = marketRecord?.stateList?.find((state) => state.state.toLowerCase() === 'regular');
+  if (regular?.startTime === undefined || regular.endTime === undefined) return null;
+  const start = parseLocalTime(regular.startTime);
+  const end = parseLocalTime(regular.endTime);
+  const timeZone = resolveTimeZone(calendar.timeZone, regular.timeZone);
+  if (start === null || end === null || timeZone === null) return null;
+  return { timeZone, start, end };
 }
 
 function resolveTimeZone(calendarTimeZone: string | undefined, marketTimeZone: string | undefined) {
@@ -209,7 +364,8 @@ function isTradingWeekday(weekday: string, regularConfig: string[] | undefined):
   return !isConfiguredClosed;
 }
 
-function isClosedBySpecificCalendar(date: string, calendar: BitgetCalendar): boolean {
+function isClosedBySpecificCalendar(date: string, calendar: BitgetCalendar | null): boolean {
+  if (calendar === null) return false;
   return (calendar.specificConfig ?? []).some((entry) => {
     const start = entry.startTime?.slice(0, 10);
     const end = entry.endTime?.slice(0, 10) ?? start;

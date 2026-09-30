@@ -21,6 +21,28 @@ export { InMemorySnapshotStore } from './snapshots.js';
 export { orderBookSnapshotId } from './snapshots.js';
 export type { MarketSnapshotStore } from './snapshots.js';
 export {
+  buildAfterMrktContext,
+  calculateRTokenMove,
+  deriveUnifiedEventContext,
+  selectRTokenCloseReference,
+  DEFAULT_CLOSE_REFERENCE_MAX_GAP_MS,
+} from './market-context.js';
+export type {
+  AfterMrktContext,
+  BuildMarketContextInput,
+  ContextEventReference,
+  ContextEventStatus,
+  ContextInstrument,
+  ContextSession,
+  CurrentMarketContext,
+  DeterministicExplanation,
+  LiquidityContext,
+  NativePriceConfirmation,
+  RTokenCloseReference,
+  RTokenMove,
+  UnifiedEventContext,
+} from './market-context.js';
+export {
   DEFAULT_BASELINE_CONFIG,
   deriveHistoricalBaseline,
   observationFromMarket,
@@ -56,10 +78,13 @@ export {
 export type { EventContext, EventContextLabel } from './event-context.js';
 export {
   evaluatePostCloseWindow,
+  deriveSessionContext,
   resolveNextRegularSessionOpen,
+  resolvePreviousRegularSessionClose,
   resolveRegularSessionClose,
+  resolveRegularSessionSchedule,
 } from './event-window.js';
-export type { EventWindowResult, EventWindowStatus } from './event-window.js';
+export type { EventWindowResult, EventWindowStatus, SessionContextResult } from './event-window.js';
 export type { BaselineConfig, HistoricalObservation } from './baselines.js';
 export type {
   ReplayManifestInput,

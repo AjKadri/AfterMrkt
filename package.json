@@ -24,7 +24,9 @@
     "probe:replay": "tsx scripts/probes/replay.ts",
     "probe:reality-events": "tsx scripts/probes/reality-events.ts",
     "probe:sec-history": "tsx scripts/probes/sec-history.ts",
-    "probe:event-pipeline": "tsx scripts/probes/event-pipeline.ts"
+    "probe:event-pipeline": "tsx scripts/probes/event-pipeline.ts",
+    "probe:context": "tsx scripts/probes/context.ts",
+    "probe:context-replay": "tsx scripts/probes/context-replay.ts"
   },
   "dependencies": {
     "decimal.js": "^10.6.0",

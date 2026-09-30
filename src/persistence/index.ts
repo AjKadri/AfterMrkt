@@ -1,7 +1,9 @@
 export {
   FileCaptureStore,
   InMemoryCaptureStore,
+  historicalCandleSnapshotId,
   marketSnapshotId,
+  marketCalendarSnapshotId,
   marketStateSnapshotId,
 } from './store.js';
 export type {
@@ -11,7 +13,11 @@ export type {
   CollectionErrorRecord,
   EventReplayCase,
   EventReplayManifest,
+  HistoricalCandleSnapshot,
+  HistoricalCandleSnapshotInput,
   HistoricalBaseline,
+  MarketCalendarSnapshot,
+  MarketCalendarSnapshotInput,
   MarketSnapshot,
   MarketSnapshotInput,
   MarketStateSnapshot,

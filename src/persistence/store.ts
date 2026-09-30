@@ -8,6 +8,10 @@ import type { NormalizedOrderBook, OrderBookSnapshot } from '../domain/types.js'
 import type {
   CaptureStore,
   CollectionErrorRecord,
+  HistoricalCandleSnapshot,
+  HistoricalCandleSnapshotInput,
+  MarketCalendarSnapshot,
+  MarketCalendarSnapshotInput,
   MarketSnapshot,
   MarketSnapshotInput,
   MarketStateSnapshot,
@@ -23,6 +27,8 @@ export class InMemoryCaptureStore implements CaptureStore {
   private readonly marketSnapshots = new Map<string, MarketSnapshot>();
   private readonly orderBooks = new Map<string, OrderBookSnapshot>();
   private readonly marketStates = new Map<string, MarketStateSnapshot>();
+  private readonly marketCalendars = new Map<string, MarketCalendarSnapshot>();
+  private readonly historicalCandles = new Map<string, HistoricalCandleSnapshot>();
   private readonly replayCases = new Map<string, ReplayCase>();
   private readonly eventReplayCases = new Map<string, EventReplayCase>();
   private readonly replayOutcomes = new Map<string, ReplayOutcomeReference>();
@@ -74,6 +80,34 @@ export class InMemoryCaptureStore implements CaptureStore {
 
   async getMarketStateSnapshot(snapshotId: string): Promise<MarketStateSnapshot | null> {
     return this.marketStates.get(snapshotId) ?? null;
+  }
+
+  async saveMarketCalendarSnapshot(
+    snapshot: MarketCalendarSnapshotInput,
+  ): Promise<MarketCalendarSnapshot> {
+    const stored = deepFreeze({ ...snapshot, snapshotId: marketCalendarSnapshotId(snapshot) });
+    const existing = this.marketCalendars.get(stored.snapshotId);
+    if (existing !== undefined) return existing;
+    this.marketCalendars.set(stored.snapshotId, stored);
+    return stored;
+  }
+
+  async getMarketCalendarSnapshot(snapshotId: string): Promise<MarketCalendarSnapshot | null> {
+    return this.marketCalendars.get(snapshotId) ?? null;
+  }
+
+  async saveHistoricalCandleSnapshot(
+    snapshot: HistoricalCandleSnapshotInput,
+  ): Promise<HistoricalCandleSnapshot> {
+    const stored = deepFreeze({ ...snapshot, snapshotId: historicalCandleSnapshotId(snapshot) });
+    const existing = this.historicalCandles.get(stored.snapshotId);
+    if (existing !== undefined) return existing;
+    this.historicalCandles.set(stored.snapshotId, stored);
+    return stored;
+  }
+
+  async getHistoricalCandleSnapshot(snapshotId: string): Promise<HistoricalCandleSnapshot | null> {
+    return this.historicalCandles.get(snapshotId) ?? null;
   }
 
   async saveReplayCase(replayCase: ReplayCase): Promise<ReplayCase> {
@@ -249,6 +283,36 @@ export class FileCaptureStore implements CaptureStore {
     );
   }
 
+  async saveMarketCalendarSnapshot(
+    snapshot: MarketCalendarSnapshotInput,
+  ): Promise<MarketCalendarSnapshot> {
+    const stored = { ...snapshot, snapshotId: marketCalendarSnapshotId(snapshot) };
+    const path = this.path('market-calendar-snapshots', `${stored.snapshotId}.json`);
+    const existing = await writeImmutable(path, stored, true);
+    return deepFreeze((existing as MarketCalendarSnapshot | null) ?? stored);
+  }
+
+  async getMarketCalendarSnapshot(snapshotId: string): Promise<MarketCalendarSnapshot | null> {
+    return readStored<MarketCalendarSnapshot>(
+      this.path('market-calendar-snapshots', `${snapshotId}.json`),
+    );
+  }
+
+  async saveHistoricalCandleSnapshot(
+    snapshot: HistoricalCandleSnapshotInput,
+  ): Promise<HistoricalCandleSnapshot> {
+    const stored = { ...snapshot, snapshotId: historicalCandleSnapshotId(snapshot) };
+    const path = this.path('historical-candle-snapshots', `${stored.snapshotId}.json`);
+    const existing = await writeImmutable(path, stored, true);
+    return deepFreeze((existing as HistoricalCandleSnapshot | null) ?? stored);
+  }
+
+  async getHistoricalCandleSnapshot(snapshotId: string): Promise<HistoricalCandleSnapshot | null> {
+    return readStored<HistoricalCandleSnapshot>(
+      this.path('historical-candle-snapshots', `${snapshotId}.json`),
+    );
+  }
+
   async saveReplayCase(replayCase: ReplayCase): Promise<ReplayCase> {
     const path = this.path('replay-cases', `${replayCase.manifest.caseId}.json`);
     const existing = await writeImmutable(path, replayCase);
@@ -393,6 +457,30 @@ export function marketSnapshotId(snapshot: MarketSnapshotInput): string {
 export function marketStateSnapshotId(snapshot: MarketStateSnapshotInput): string {
   return sha256(
     canonicalJson({
+      data: snapshot.data,
+      providerTimestamp: snapshot.providerTimestamp,
+      sourceId: snapshot.source.sourceId,
+      rawResponseHash: snapshot.source.rawResponseHash,
+    }),
+  );
+}
+
+export function marketCalendarSnapshotId(snapshot: MarketCalendarSnapshotInput): string {
+  return sha256(
+    canonicalJson({
+      data: snapshot.data,
+      providerTimestamp: snapshot.providerTimestamp,
+      sourceId: snapshot.source.sourceId,
+      rawResponseHash: snapshot.source.rawResponseHash,
+    }),
+  );
+}
+
+export function historicalCandleSnapshotId(snapshot: HistoricalCandleSnapshotInput): string {
+  return sha256(
+    canonicalJson({
+      providerSymbol: snapshot.providerSymbol,
+      interval: snapshot.interval,
       data: snapshot.data,
       providerTimestamp: snapshot.providerTimestamp,
       sourceId: snapshot.source.sourceId,

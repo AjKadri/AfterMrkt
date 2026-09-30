@@ -1,7 +1,8 @@
-import type { BitgetMarket } from '../contracts/bitget.js';
+import type { BitgetCalendar, BitgetMarket } from '../contracts/bitget.js';
 import type { EventAnalysis, SourceEvent } from '../contracts/events.js';
 import type {
   NormalizedRealityInstrument,
+  NormalizedCandle,
   NormalizedTicker,
   OrderBookSnapshot,
   SourceMetadata,
@@ -40,6 +41,24 @@ export type MarketStateSnapshot = {
   source: SourceMetadata;
 };
 
+export type MarketCalendarSnapshot = {
+  snapshotId: string;
+  data: BitgetCalendar;
+  providerTimestamp: string | null;
+  receivedAt: string;
+  source: SourceMetadata;
+};
+
+export type HistoricalCandleSnapshot = {
+  snapshotId: string;
+  providerSymbol: string;
+  interval: string;
+  data: NormalizedCandle[];
+  providerTimestamp: string | null;
+  receivedAt: string;
+  source: SourceMetadata;
+};
+
 export type PersistedInstrument = {
   providerSymbol: string;
   instrument: NormalizedRealityInstrument;
@@ -69,6 +88,9 @@ export type ReplayManifest = {
   marketSnapshotId: string;
   orderBookSnapshotId: string;
   marketStateSnapshotId: string | null;
+  marketCalendarSnapshotId?: string | null;
+  historicalCandleSnapshotId?: string | null;
+  instrument?: NormalizedRealityInstrument;
   sources: ReplaySourceReference[];
   eventIds?: string[];
   manifestCreatedAt: string;
@@ -92,6 +114,10 @@ export type EventReplayManifest = {
   nativeTicker: string | null;
   replayAsOf: string;
   eventIds: string[];
+  instrument?: NormalizedRealityInstrument;
+  marketStateSnapshotId?: string | null;
+  marketCalendarSnapshotId?: string | null;
+  historicalCandleSnapshotId?: string | null;
   manifestCreatedAt: string;
   manifestHash: string;
 };
@@ -129,6 +155,8 @@ export type HistoricalBaseline = {
 
 export type MarketSnapshotInput = Omit<MarketSnapshot, 'snapshotId'>;
 export type MarketStateSnapshotInput = Omit<MarketStateSnapshot, 'snapshotId'>;
+export type MarketCalendarSnapshotInput = Omit<MarketCalendarSnapshot, 'snapshotId'>;
+export type HistoricalCandleSnapshotInput = Omit<HistoricalCandleSnapshot, 'snapshotId'>;
 
 export type CaptureStore = {
   saveInstrument(record: PersistedInstrument): Promise<PersistedInstrument>;
@@ -139,6 +167,14 @@ export type CaptureStore = {
   getOrderBook(snapshotId: string): Promise<OrderBookSnapshot | null>;
   saveMarketStateSnapshot(snapshot: MarketStateSnapshotInput): Promise<MarketStateSnapshot>;
   getMarketStateSnapshot(snapshotId: string): Promise<MarketStateSnapshot | null>;
+  saveMarketCalendarSnapshot(
+    snapshot: MarketCalendarSnapshotInput,
+  ): Promise<MarketCalendarSnapshot>;
+  getMarketCalendarSnapshot(snapshotId: string): Promise<MarketCalendarSnapshot | null>;
+  saveHistoricalCandleSnapshot(
+    snapshot: HistoricalCandleSnapshotInput,
+  ): Promise<HistoricalCandleSnapshot>;
+  getHistoricalCandleSnapshot(snapshotId: string): Promise<HistoricalCandleSnapshot | null>;
   saveReplayCase(replayCase: ReplayCase): Promise<ReplayCase>;
   getReplayCase(caseId: string): Promise<ReplayCase | null>;
   listReplayCases(): Promise<ReplayCase[]>;

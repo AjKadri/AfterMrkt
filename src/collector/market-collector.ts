@@ -3,7 +3,7 @@ import { assessFreshness } from '../domain/freshness.js';
 import type { PublicMarketDataProvider } from '../adapters/bitget/public-market-data.js';
 import type { NormalizedRealityInstrument } from '../domain/types.js';
 import { createReplayCase } from '../domain/replay.js';
-import type { MarketStateSnapshot } from '../persistence/types.js';
+import type { MarketCalendarSnapshot, MarketStateSnapshot } from '../persistence/types.js';
 import {
   marketSnapshotInputFromTicker,
   type CaptureStore,
@@ -31,6 +31,8 @@ export type CollectedSymbol = {
   marketSnapshotId: string | null;
   orderBookSnapshotId: string | null;
   marketStateSnapshotId: string | null;
+  marketCalendarSnapshotId: string | null;
+  historicalCandleSnapshotId: string | null;
   tickerFreshness: ReturnType<typeof assessFreshness> | null;
   bookFreshness: ReturnType<typeof assessFreshness> | null;
   errors: string[];
@@ -42,6 +44,7 @@ export type CollectorCycle = {
   watchSymbols: string[];
   symbols: CollectedSymbol[];
   marketStateSnapshotId: string | null;
+  marketCalendarSnapshotId: string | null;
   errors: CollectionErrorRecord[];
 };
 
@@ -68,6 +71,7 @@ export class MarketCollector {
       universe.data.map((instrument) => [instrument.providerSymbol, instrument]),
     );
     let marketStateSnapshot: MarketStateSnapshot | null = null;
+    let marketCalendarSnapshot: MarketCalendarSnapshot | null = null;
     try {
       const states = await this.provider.getMarketStates();
       marketStateSnapshot = await this.store.saveMarketStateSnapshot({
@@ -78,6 +82,17 @@ export class MarketCollector {
       });
     } catch (error) {
       await this.recordError(errors, 'all', 'market-state', error);
+    }
+    try {
+      const calendar = await this.provider.getMarketCalendar();
+      marketCalendarSnapshot = await this.store.saveMarketCalendarSnapshot({
+        data: calendar.data,
+        providerTimestamp: calendar.source.providerTimestamp,
+        receivedAt: calendar.source.receivedAt,
+        source: calendar.source,
+      });
+    } catch (error) {
+      await this.recordError(errors, 'all', 'market-calendar', error);
     }
 
     const symbols: CollectedSymbol[] = [];
@@ -91,6 +106,8 @@ export class MarketCollector {
           marketSnapshotId: null,
           orderBookSnapshotId: null,
           marketStateSnapshotId: marketStateSnapshot?.snapshotId ?? null,
+          marketCalendarSnapshotId: marketCalendarSnapshot?.snapshotId ?? null,
+          historicalCandleSnapshotId: null,
           tickerFreshness: null,
           bookFreshness: null,
           errors: ['provider symbol was not present in the current Reality universe'],
@@ -109,7 +126,13 @@ export class MarketCollector {
         capturedAt: universe.source.receivedAt,
       });
       symbols.push(
-        await this.collectSymbol(providerSymbol, instrument, marketStateSnapshot, errors),
+        await this.collectSymbol(
+          providerSymbol,
+          instrument,
+          marketStateSnapshot,
+          marketCalendarSnapshot,
+          errors,
+        ),
       );
     }
 
@@ -119,6 +142,7 @@ export class MarketCollector {
       watchSymbols: [...this.watchSymbols],
       symbols,
       marketStateSnapshotId: marketStateSnapshot?.snapshotId ?? null,
+      marketCalendarSnapshotId: marketCalendarSnapshot?.snapshotId ?? null,
       errors,
     };
   }
@@ -134,13 +158,26 @@ export class MarketCollector {
         `capture for ${providerSymbol} has no complete market and order-book snapshots`,
       );
     }
-    const [instrument, marketSnapshot, orderBookSnapshot, marketStateSnapshot] = await Promise.all([
+    const [
+      instrument,
+      marketSnapshot,
+      orderBookSnapshot,
+      marketStateSnapshot,
+      marketCalendarSnapshot,
+      historicalCandleSnapshot,
+    ] = await Promise.all([
       this.store.getInstrument(providerSymbol),
       this.store.getMarketSnapshot(result.marketSnapshotId),
       this.store.getOrderBook(result.orderBookSnapshotId),
       result.marketStateSnapshotId === null
         ? Promise.resolve(null)
         : this.store.getMarketStateSnapshot(result.marketStateSnapshotId),
+      result.marketCalendarSnapshotId === null
+        ? Promise.resolve(null)
+        : this.store.getMarketCalendarSnapshot(result.marketCalendarSnapshotId),
+      result.historicalCandleSnapshotId === null
+        ? Promise.resolve(null)
+        : this.store.getHistoricalCandleSnapshot(result.historicalCandleSnapshotId),
     ]);
     if (instrument === null || marketSnapshot === null || orderBookSnapshot === null) {
       throw new Error(`capture references for ${providerSymbol} could not be loaded`);
@@ -150,6 +187,8 @@ export class MarketCollector {
         marketSnapshot.receivedAt,
         orderBookSnapshot.receivedAt,
         marketStateSnapshot?.receivedAt,
+        marketCalendarSnapshot?.receivedAt,
+        historicalCandleSnapshot?.receivedAt,
       ].filter((value): value is string => value !== undefined),
     );
     const replayCase = createReplayCase({
@@ -159,6 +198,9 @@ export class MarketCollector {
       marketSnapshot,
       orderBookSnapshot,
       marketStateSnapshot,
+      marketCalendarSnapshot,
+      historicalCandleSnapshot,
+      instrument: instrument.instrument,
       manifestCreatedAt,
     });
     return this.store.saveReplayCase(replayCase);
@@ -168,6 +210,7 @@ export class MarketCollector {
     providerSymbol: string,
     instrument: NormalizedRealityInstrument,
     marketStateSnapshot: MarketStateSnapshot | null,
+    marketCalendarSnapshot: MarketCalendarSnapshot | null,
     errors: CollectionErrorRecord[],
   ): Promise<CollectedSymbol> {
     const result: CollectedSymbol = {
@@ -177,6 +220,8 @@ export class MarketCollector {
       marketSnapshotId: null,
       orderBookSnapshotId: null,
       marketStateSnapshotId: marketStateSnapshot?.snapshotId ?? null,
+      marketCalendarSnapshotId: marketCalendarSnapshot?.snapshotId ?? null,
+      historicalCandleSnapshotId: null,
       tickerFreshness: null,
       bookFreshness: null,
       errors: [],
@@ -225,6 +270,25 @@ export class MarketCollector {
       result.orderBookSnapshotId = (await this.store.saveOrderBook(orderBook.data)).snapshotId;
     } catch (error) {
       const record = await this.recordError(errors, providerSymbol, 'orderbook', error);
+      result.errors.push(record.message);
+    }
+    try {
+      const candles = await this.provider.getHistoricalCandles(providerSymbol, {
+        interval: '1m',
+        limit: 100,
+      });
+      result.historicalCandleSnapshotId = (
+        await this.store.saveHistoricalCandleSnapshot({
+          providerSymbol,
+          interval: '1m',
+          data: candles.data,
+          providerTimestamp: candles.source.providerTimestamp,
+          receivedAt: candles.source.receivedAt,
+          source: candles.source,
+        })
+      ).snapshotId;
+    } catch (error) {
+      const record = await this.recordError(errors, providerSymbol, 'historical-candles', error);
       result.errors.push(record.message);
     }
     return result;
