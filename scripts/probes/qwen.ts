@@ -1,183 +1,280 @@
-import { QwenClient, QWEN_PROMPT_VERSION, parseQwenEvent } from '../../src/adapters/qwen/index.js';
-import { hashRawResponse, writeProbeRecord } from '../../src/observability/evidence.js';
-import { ProbeError } from '../../src/lib/errors.js';
-import { requestRaw } from '../../src/lib/http.js';
-import type { ProbeRecord } from '../../src/probes/types.js';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
-  createEvidenceDirectory,
-  failureReason,
-  failureStatus,
-  redactForSummary,
-} from './common.js';
+  QWEN_EVENT_JSON_SCHEMA,
+  QWEN_PROMPT_VERSION,
+  QwenClient,
+  parseQwenEvent,
+  type QwenCall,
+  type QwenResponseFormat,
+} from '../../src/adapters/qwen/index.js';
+import { hashRawResponse } from '../../src/observability/evidence.js';
+import { ProbeError, classifyThrownError } from '../../src/lib/errors.js';
+import type { CapabilityStatus } from '../../src/probes/types.js';
+import { createEvidenceDirectory } from './common.js';
 
 const client = new QwenClient();
-const evidenceDirectory = await createEvidenceDirectory('qwen');
-const sourceUrl = process.env.QWEN_SAMPLE_SOURCE_URL ?? 'https://www.sec.gov/ixviewer/doc/action';
+const sourceUrl = process.env.QWEN_SAMPLE_SOURCE_URL ?? 'https://investors.micron.com/';
 const sourceText =
   process.env.QWEN_SAMPLE_TEXT ??
   'Micron Technology announced quarterly results and described demand for memory products in its public investor materials.';
-const startedAt = new Date().toISOString();
-const records: ProbeRecord[] = [];
-let initial: Awaited<ReturnType<QwenClient['extractEvent']>> | undefined;
-let repair: Awaited<ReturnType<QwenClient['repairEvent']>> | undefined;
-let parsedEvent: unknown = null;
-let failure: { status: string; reason: string } | undefined;
+const evidenceDirectory = await createEvidenceDirectory('qwen');
+const schemaFormat: QwenResponseFormat = {
+  type: 'json_schema',
+  json_schema: QWEN_EVENT_JSON_SCHEMA,
+};
+const objectFormat: QwenResponseFormat = { type: 'json_object' };
 
-try {
-  if (!client.apiKey) {
-    const connectivity = await requestRaw(
-      `${client.baseUrl.replace(/\/+$/, '')}/chat/completions`,
-      {
-        method: 'POST',
-        timeoutMs: client.timeoutMs,
-        headers: {
-          accept: 'application/json',
-          'content-type': 'application/json',
-          'user-agent': 'AfterMrkt-capability-probe/0.1',
-        },
-        body: JSON.stringify({
-          model: client.model,
-          messages: [{ role: 'user', content: 'Return JSON.' }],
-          max_tokens: 8,
-        }),
-      },
-    );
-    const status: ProbeRecord['capabilityResult']['status'] =
-      connectivity.status === 401 || connectivity.status === 403
-        ? 'authentication_invalid'
-        : 'provider_rejected';
-    const reason = `Qwen endpoint reachable; unauthenticated probe returned HTTP ${connectivity.status}.`;
-    failure = { status, reason };
-    records.push({
-      capability: 'qwen.endpoint.connectivity',
-      request: { method: 'POST', url: connectivity.url, body: { model: client.model } },
-      endpoint: connectivity.url,
-      startedAt,
-      receivedAt: connectivity.receivedAt,
-      providerTimestamp: null,
-      normalizedResponse: {
-        httpStatus: connectivity.status,
-        headers: { 'www-authenticate': connectivity.headers['www-authenticate'] ?? null },
-      },
-      rawResponseHash: hashRawResponse(connectivity.bodyText),
-      capabilityResult: { status, reason, httpStatus: connectivity.status },
-      rawResponse: connectivity.bodyText,
-    });
-    throw new ProbeError(status, reason, { httpStatus: connectivity.status });
-  }
-
-  initial = await client.extractEvent({
-    sourceUrl,
-    sourceText,
-    promptVersion: QWEN_PROMPT_VERSION,
-  });
-  records.push(toRecord('qwen.chat-completions.initial', startedAt, initial, initial.content));
-  try {
-    parsedEvent = parseQwenEvent(initial.content);
-  } catch (error) {
-    if (!(error instanceof ProbeError) || error.status !== 'malformed_provider_data') {
-      throw error;
-    }
-    repair = await client.repairEvent({
-      invalidOutput: initial.content,
-      promptVersion: QWEN_PROMPT_VERSION,
-    });
-    records.push(toRecord('qwen.chat-completions.repair', startedAt, repair, repair.content));
-    parsedEvent = parseQwenEvent(repair.content);
-  }
-} catch (error) {
-  const status = failureStatus(error);
-  const reason = failureReason(error);
-  const rawResponse = error instanceof ProbeError ? error.rawResponse : undefined;
-  failure = {
-    status,
-    reason,
+type Attempt = {
+  capability: string;
+  responseFormat: QwenResponseFormat;
+  status: CapabilityStatus;
+  result?: QwenCall;
+  parsed?: boolean;
+  error?: {
+    httpStatus: number | null;
+    providerCode: string | null;
   };
-  if (rawResponse && records.length === 0) {
-    records.push({
-      capability: 'qwen.chat-completions.failure',
-      request: {
-        method: 'POST',
-        url: `${client.baseUrl.replace(/\/+$/, '')}/chat/completions`,
-        body: { model: client.model },
-      },
-      endpoint: rawResponse.url,
-      startedAt,
-      receivedAt: rawResponse.receivedAt,
-      providerTimestamp: null,
-      normalizedResponse: { status, reason },
-      rawResponseHash: hashRawResponse(rawResponse.bodyText),
-      capabilityResult: { status, reason, httpStatus: rawResponse.status },
-      rawResponse: rawResponse.bodyText,
-    });
-  }
+};
+
+const attempts: Attempt[] = [];
+
+const schemaAttempt = await runAttempt(
+  'qwen.chat-completions.json-schema',
+  schemaFormat,
+  () =>
+    client.extractEvent({
+      sourceUrl,
+      sourceText,
+      promptVersion: QWEN_PROMPT_VERSION,
+      responseFormat: schemaFormat,
+    }),
+  true,
+);
+
+const objectAttempt = await runAttempt(
+  'qwen.chat-completions.json-object-fallback',
+  objectFormat,
+  () =>
+    client.extractEvent({
+      sourceUrl,
+      sourceText,
+      promptVersion: QWEN_PROMPT_VERSION,
+      responseFormat: objectFormat,
+    }),
+  true,
+);
+
+const repairSource = schemaAttempt.result ?? objectAttempt.result;
+let repairAttempt: Attempt | undefined;
+if (repairSource !== undefined) {
+  const invalidOutput = `${repairSource.content}\nTRUNCATED_BY_CAPABILITY_SPIKE`;
+  const repairFormat = schemaAttempt.result === undefined ? objectFormat : schemaFormat;
+  repairAttempt = await runAttempt(
+    'qwen.chat-completions.repair',
+    repairFormat,
+    () =>
+      client.repairEvent({
+        invalidOutput,
+        promptVersion: QWEN_PROMPT_VERSION,
+        responseFormat: repairFormat,
+      }),
+    true,
+  );
 }
 
-for (const record of records) {
-  await writeProbeRecord(record, evidenceDirectory);
+const invalidModel = `${client.model}-invalid-capability-probe`;
+const errorAttempt = await runAttempt(
+  'qwen.chat-completions.error.invalid-model',
+  objectFormat,
+  () =>
+    new QwenClient({
+      baseUrl: client.baseUrl,
+      ...(client.apiKey === undefined ? {} : { apiKey: client.apiKey }),
+      model: invalidModel,
+      timeoutMs: client.timeoutMs,
+      responseFormat: objectFormat,
+    }).extractEvent({
+      sourceUrl,
+      sourceText,
+      promptVersion: QWEN_PROMPT_VERSION,
+      responseFormat: objectFormat,
+    }),
+  false,
+);
+
+if (schemaAttempt.result !== undefined || objectAttempt.result !== undefined) {
+  const fixture = buildFixture({ schemaAttempt, objectAttempt, repairAttempt, errorAttempt });
+  const fixturePath = join(process.cwd(), 'tests', 'fixtures', 'qwen', 'provider-contract.json');
+  await mkdir(join(process.cwd(), 'tests', 'fixtures', 'qwen'), { recursive: true });
+  await writeFile(fixturePath, `${JSON.stringify(fixture, null, 2)}\n`, 'utf8');
 }
+
+await writeFile(
+  join(evidenceDirectory, 'summary.json'),
+  `${JSON.stringify(
+    {
+      provider: 'bitget-hackathon-qwen',
+      endpoint: safeEndpoint(client.baseUrl),
+      requestedModel: client.model,
+      apiKeyConfigured: Boolean(client.apiKey),
+      promptVersion: QWEN_PROMPT_VERSION,
+      calls: attempts.map(summarizeAttempt),
+      fixture: schemaAttempt.result !== undefined || objectAttempt.result !== undefined,
+    },
+    null,
+    2,
+  )}\n`,
+  'utf8',
+);
 
 console.log(
   JSON.stringify(
     {
-      provider: 'qwen',
-      endpoint: client.baseUrl,
-      model: client.model,
-      apiKey: redactForSummary(client.apiKey),
+      provider: 'bitget-hackathon-qwen',
+      endpoint: safeEndpoint(client.baseUrl),
+      requestedModel: client.model,
+      apiKeyConfigured: Boolean(client.apiKey),
       evidenceDirectory,
-      sampleSourceUrl: sourceUrl,
-      promptVersion: QWEN_PROMPT_VERSION,
-      initialCall: initial
-        ? {
-            latencyMs: initial.latencyMs,
-            usage: initial.usage,
-            rawResponseHash: hashRawResponse(initial.raw.bodyText),
-          }
-        : null,
-      repairCall: repair
-        ? {
-            latencyMs: repair.latencyMs,
-            usage: repair.usage,
-            rawResponseHash: hashRawResponse(repair.raw.bodyText),
-          }
-        : null,
-      schemaValid: parsedEvent !== null,
-      failure: failure ?? null,
+      fixture:
+        schemaAttempt.result !== undefined || objectAttempt.result !== undefined
+          ? 'tests/fixtures/qwen/provider-contract.json'
+          : null,
+      calls: attempts.map(summarizeAttempt),
     },
     null,
     2,
   ),
 );
 
-function toRecord(
+async function runAttempt(
   capability: string,
-  startedAtValue: string,
-  result: Awaited<ReturnType<QwenClient['extractEvent']>>,
-  content: string,
-): ProbeRecord {
+  responseFormat: QwenResponseFormat,
+  action: () => Promise<QwenCall>,
+  validate: boolean,
+): Promise<Attempt> {
+  const attempt: Attempt = { capability, responseFormat, status: 'not_attempted' };
+  try {
+    const result = await action();
+    attempt.result = result;
+    attempt.status = 'verified';
+    if (validate) {
+      parseQwenEvent(result.content);
+      attempt.parsed = true;
+    }
+  } catch (error) {
+    attempt.status = error instanceof ProbeError ? error.status : classifyThrownError(error);
+    const probeError = error instanceof ProbeError ? error : undefined;
+    attempt.error = {
+      httpStatus: probeError?.httpStatus ?? probeError?.rawResponse?.status ?? null,
+      providerCode: probeError?.providerCode ?? null,
+    };
+  }
+  attempts.push(attempt);
+  return attempt;
+}
+
+function summarizeAttempt(attempt: Attempt): Record<string, unknown> {
   return {
-    capability,
-    request: {
-      method: 'POST',
-      url: `${client.baseUrl.replace(/\/+$/, '')}/chat/completions`,
-      body: { model: client.model, response_format: { type: 'json_object' } },
-    },
-    endpoint: result.raw.url,
-    startedAt: startedAtValue,
-    receivedAt: result.raw.receivedAt,
-    providerTimestamp: null,
-    normalizedResponse: {
-      model: result.model,
-      content,
-      usage: result.usage,
-      latencyMs: result.latencyMs,
-    },
-    rawResponseHash: hashRawResponse(result.raw.bodyText),
-    capabilityResult: {
-      status: 'verified',
-      reason: 'Qwen completion response received and locally inspected.',
-      httpStatus: result.raw.status,
-    },
-    rawResponse: result.raw.bodyText,
+    capability: attempt.capability,
+    responseFormat: attempt.responseFormat.type,
+    status: attempt.status,
+    parsedWithLocalZod: attempt.parsed ?? false,
+    ...(attempt.result === undefined
+      ? { error: attempt.error ?? null }
+      : {
+          requestedModel: attempt.result.model,
+          providerReportedModel: attempt.result.providerReportedModel,
+          latencyMs: attempt.result.latencyMs,
+          usage: usageSummary(attempt.result),
+          rawResponseHash: hashRawResponse(attempt.result.raw.bodyText),
+        }),
   };
+}
+
+function usageSummary(result: QwenCall): Record<string, unknown> {
+  return {
+    inputTokens: result.accounting.inputTokens,
+    outputTokens: result.accounting.outputTokens,
+    totalTokens: result.accounting.totalTokens,
+    cachedTokens: result.accounting.cachedTokens,
+    providerReportedCostUsd: result.accounting.providerReportedCostUsd,
+    estimatedCostUsd: result.accounting.estimatedCostUsd,
+    pricingSource: result.accounting.pricingSource,
+    providerUsageFields: result.usage === null ? [] : Object.keys(result.usage).sort(),
+  };
+}
+
+function buildFixture(input: {
+  schemaAttempt: Attempt;
+  objectAttempt: Attempt;
+  repairAttempt: Attempt | undefined;
+  errorAttempt: Attempt;
+}): Record<string, unknown> {
+  return {
+    fixtureType: 'redacted-qwen-provider-contract',
+    fixtureStatus: 'authenticated-capability-spike',
+    provider: 'bitget-hackathon-qwen',
+    endpoint: safeEndpoint(client.baseUrl),
+    requestedModel: client.model,
+    promptVersion: QWEN_PROMPT_VERSION,
+    redaction: {
+      apiKey: 'omitted',
+      prompt: 'omitted',
+      sourceText: 'omitted',
+      rawResponse: 'omitted',
+    },
+    responseContract: {
+      eventType: 'string',
+      entities: [{ name: 'string', ticker: 'string|null' }],
+      materiality: ['low', 'medium', 'high', 'unknown'],
+      facts: ['string'],
+      uncertainties: ['string'],
+      evidenceSpans: [{ quote: 'string', start: 'integer|null', end: 'integer|null' }],
+      confidence: 'number 0..1',
+      sourceBound: 'boolean',
+      model: 'string',
+      promptVersion: 'string',
+    },
+    calls: {
+      jsonSchema: fixtureCall(input.schemaAttempt),
+      jsonObjectFallback: fixtureCall(input.objectAttempt),
+      repair:
+        input.repairAttempt === undefined
+          ? { status: 'not_attempted' }
+          : fixtureCall(input.repairAttempt),
+      errorBehavior: fixtureError(input.errorAttempt),
+    },
+  };
+}
+
+function fixtureCall(attempt: Attempt): Record<string, unknown> {
+  if (attempt.result === undefined) {
+    return { status: attempt.status, error: attempt.error ?? null };
+  }
+  return {
+    status: attempt.status,
+    localZodValidation: attempt.parsed ?? false,
+    requestedModel: attempt.result.model,
+    providerReportedModel: attempt.result.providerReportedModel,
+    latencyMs: attempt.result.latencyMs,
+    usage: usageSummary(attempt.result),
+  };
+}
+
+function fixtureError(attempt: Attempt): Record<string, unknown> {
+  return {
+    status: attempt.status,
+    httpStatus: attempt.error?.httpStatus ?? null,
+    providerCode: attempt.error?.providerCode ?? null,
+  };
+}
+
+function safeEndpoint(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    return `${url.origin}${url.pathname}`.replace(/\/$/, '');
+  } catch {
+    return 'unavailable';
+  }
 }

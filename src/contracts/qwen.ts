@@ -7,8 +7,8 @@ export const QwenEntitySchema = z.object({
 
 export const QwenEvidenceSpanSchema = z.object({
   quote: z.string(),
-  start: z.number().int().nonnegative().optional(),
-  end: z.number().int().nonnegative().optional(),
+  start: z.number().int().nonnegative().nullable().optional(),
+  end: z.number().int().nonnegative().nullable().optional(),
 });
 
 export const QwenEventSchema = z.object({
@@ -34,6 +34,10 @@ export const QwenUsageSchema = z
     input_tokens: z.number().optional(),
     output_tokens: z.number().optional(),
     cached_tokens: z.number().optional(),
+    prompt_tokens_details: z
+      .object({ cached_tokens: z.number().optional() })
+      .passthrough()
+      .optional(),
     cost: z.union([z.string(), z.number()]).optional(),
   })
   .passthrough();

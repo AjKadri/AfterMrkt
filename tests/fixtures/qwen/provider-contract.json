@@ -1,0 +1,97 @@
+{
+  "fixtureType": "redacted-qwen-provider-contract",
+  "fixtureStatus": "authenticated-capability-spike",
+  "provider": "bitget-hackathon-qwen",
+  "endpoint": "https://hackathon.bitgetops.com/v1",
+  "requestedModel": "qwen3.8-max",
+  "promptVersion": "event-extraction-v1",
+  "redaction": {
+    "apiKey": "omitted",
+    "prompt": "omitted",
+    "sourceText": "omitted",
+    "rawResponse": "omitted"
+  },
+  "responseContract": {
+    "eventType": "string",
+    "entities": [
+      {
+        "name": "string",
+        "ticker": "string|null"
+      }
+    ],
+    "materiality": ["low", "medium", "high", "unknown"],
+    "facts": ["string"],
+    "uncertainties": ["string"],
+    "evidenceSpans": [
+      {
+        "quote": "string",
+        "start": "integer|null",
+        "end": "integer|null"
+      }
+    ],
+    "confidence": "number 0..1",
+    "sourceBound": "boolean",
+    "model": "string",
+    "promptVersion": "string"
+  },
+  "calls": {
+    "jsonSchema": {
+      "status": "verified",
+      "localZodValidation": true,
+      "requestedModel": "qwen3.8-max",
+      "providerReportedModel": "qwen3.8-max",
+      "latencyMs": 16249.406459,
+      "usage": {
+        "inputTokens": 205,
+        "outputTokens": 492,
+        "totalTokens": 697,
+        "cachedTokens": 0,
+        "providerReportedCostUsd": null,
+        "estimatedCostUsd": null,
+        "pricingSource": "unavailable",
+        "providerUsageFields": [
+          "completion_tokens",
+          "completion_tokens_details",
+          "prompt_tokens",
+          "prompt_tokens_details",
+          "total_tokens"
+        ]
+      }
+    },
+    "jsonObjectFallback": {
+      "status": "malformed_provider_data",
+      "localZodValidation": false,
+      "requestedModel": "qwen3.8-max",
+      "providerReportedModel": "qwen3.8-max",
+      "latencyMs": 15311.366084000001,
+      "usage": {
+        "inputTokens": 205,
+        "outputTokens": 537,
+        "totalTokens": 742,
+        "cachedTokens": 0,
+        "providerReportedCostUsd": null,
+        "estimatedCostUsd": null,
+        "pricingSource": "unavailable",
+        "providerUsageFields": [
+          "completion_tokens",
+          "completion_tokens_details",
+          "prompt_tokens",
+          "prompt_tokens_details",
+          "total_tokens"
+        ]
+      }
+    },
+    "repair": {
+      "status": "request_timeout",
+      "error": {
+        "httpStatus": null,
+        "providerCode": null
+      }
+    },
+    "errorBehavior": {
+      "status": "provider_rejected",
+      "httpStatus": 404,
+      "providerCode": "model_not_found"
+    }
+  }
+}

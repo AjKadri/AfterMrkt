@@ -5,7 +5,7 @@ import {
   type QwenUsage,
 } from '../../contracts/qwen.js';
 import Decimal from 'decimal.js';
-import { ProbeError } from '../../lib/errors.js';
+import { ProbeError, classifyProviderFailure, classifyThrownError } from '../../lib/errors.js';
 import { requestRaw, joinUrl, parseJsonBody, type RawHttpResponse } from '../../lib/http.js';
 
 export const DEFAULT_QWEN_BASE_URL = 'https://hackathon.bitgetops.com/v1';
@@ -31,6 +31,62 @@ export type QwenJsonSchema = {
 export type QwenResponseFormat =
   { type: 'json_object' } | { type: 'json_schema'; json_schema: QwenJsonSchema };
 
+export const QWEN_EVENT_JSON_SCHEMA: QwenJsonSchema = {
+  name: 'financial_event_extraction',
+  strict: true,
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: [
+      'eventType',
+      'entities',
+      'materiality',
+      'facts',
+      'uncertainties',
+      'evidenceSpans',
+      'confidence',
+      'sourceBound',
+      'model',
+      'promptVersion',
+    ],
+    properties: {
+      eventType: { type: 'string' },
+      entities: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['name', 'ticker'],
+          properties: {
+            name: { type: 'string' },
+            ticker: { type: ['string', 'null'] },
+          },
+        },
+      },
+      materiality: { type: 'string', enum: ['low', 'medium', 'high', 'unknown'] },
+      facts: { type: 'array', items: { type: 'string' } },
+      uncertainties: { type: 'array', items: { type: 'string' } },
+      evidenceSpans: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['quote', 'start', 'end'],
+          properties: {
+            quote: { type: 'string' },
+            start: { type: ['integer', 'null'], minimum: 0 },
+            end: { type: ['integer', 'null'], minimum: 0 },
+          },
+        },
+      },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+      sourceBound: { type: 'boolean' },
+      model: { type: 'string' },
+      promptVersion: { type: 'string' },
+    },
+  },
+};
+
 export type QwenTokenAccounting = {
   inputTokens: number | null;
   outputTokens: number | null;
@@ -49,6 +105,7 @@ export type QwenCall = {
   accounting: QwenTokenAccounting;
   latencyMs: number;
   model: string;
+  providerReportedModel: string | null;
 };
 
 export class QwenClient {
@@ -126,24 +183,22 @@ export class QwenClient {
         }),
       });
     } catch (error) {
+      const status = classifyThrownError(error);
       throw new ProbeError(
-        'environment_unreachable',
+        status,
         `Qwen request failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
     if (raw.status < 200 || raw.status >= 300) {
       const details = readProviderError(raw.bodyText);
-      throw new ProbeError(
-        raw.status === 401 || raw.status === 403 ? 'authentication_invalid' : 'provider_rejected',
-        `Qwen HTTP ${raw.status}: ${details.message}`,
-        {
-          httpStatus: raw.status,
-          providerCode: details.code,
-          providerMessage: details.message,
-          rawResponse: raw,
-        },
-      );
+      const status = classifyProviderFailure(raw.status, details.code, details.message);
+      throw new ProbeError(status, `Qwen HTTP ${raw.status}: ${details.message}`, {
+        httpStatus: raw.status,
+        providerCode: details.code,
+        providerMessage: details.message,
+        rawResponse: raw,
+      });
     }
 
     let response: Record<string, unknown>;
@@ -177,6 +232,8 @@ export class QwenClient {
       ),
       latencyMs: performance.now() - started,
       model: this.model,
+      providerReportedModel:
+        typeof response.model === 'string' && response.model.length > 0 ? response.model : null,
     };
   }
 }
@@ -191,7 +248,7 @@ function buildTokenAccounting(
   const totalTokens =
     usage?.total_tokens ??
     (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
-  const cachedTokens = usage?.cached_tokens ?? null;
+  const cachedTokens = usage?.cached_tokens ?? usage?.prompt_tokens_details?.cached_tokens ?? null;
   const providerReportedCostUsd = usage?.cost === undefined ? null : String(usage.cost);
   if (providerReportedCostUsd !== null) {
     return {
