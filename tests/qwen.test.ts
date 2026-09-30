@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { QWEN_EVENT_JSON_SCHEMA, parseQwenEvent } from '../src/adapters/qwen/index.js';
+import { QWEN_EVENT_JSON_SCHEMA, QwenClient, parseQwenEvent } from '../src/adapters/qwen/index.js';
 import providerContract from './fixtures/qwen/provider-contract.json';
 
 describe('Qwen event contract', () => {
@@ -8,10 +8,16 @@ describe('Qwen event contract', () => {
       JSON.stringify({
         eventType: 'earnings',
         entities: [{ name: 'Micron Technology', ticker: 'MU' }],
-        materiality: 'medium',
-        facts: ['The source describes quarterly results.'],
+        materiality: 'possibly_material',
+        facts: [
+          {
+            id: 'fact-1',
+            statement: 'The source describes quarterly results.',
+            evidenceSpanIds: ['span-1'],
+          },
+        ],
         uncertainties: [],
-        evidenceSpans: [{ quote: 'quarterly results' }],
+        evidenceSpans: [{ id: 'span-1', quote: 'quarterly results', start: null, end: null }],
         confidence: 0.8,
         sourceBound: true,
         model: 'qwen3.8-max',
@@ -32,10 +38,16 @@ describe('Qwen event contract', () => {
       JSON.stringify({
         eventType: 'earnings',
         entities: [{ name: 'Micron Technology', ticker: 'MU' }],
-        materiality: 'medium',
-        facts: ['The source describes quarterly results.'],
+        materiality: 'possibly_material',
+        facts: [
+          {
+            id: 'fact-1',
+            statement: 'The source describes quarterly results.',
+            evidenceSpanIds: ['span-1'],
+          },
+        ],
         uncertainties: [],
-        evidenceSpans: [{ quote: 'quarterly results', start: null, end: null }],
+        evidenceSpans: [{ id: 'span-1', quote: 'quarterly results', start: null, end: null }],
         confidence: 0.8,
         sourceBound: true,
         model: 'qwen3.8-max',
@@ -59,5 +71,10 @@ describe('Qwen event contract', () => {
       type: 'object',
       additionalProperties: false,
     });
+  });
+
+  it('defaults the client to the production JSON Schema response format', () => {
+    const client = new QwenClient();
+    expect(client.responseFormat.type).toBe('json_schema');
   });
 });

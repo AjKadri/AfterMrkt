@@ -9,6 +9,7 @@ import {
   MarketSchema,
   OrderBookSchema,
   StockInfoSchema,
+  SuspensionResumptionSchema,
   TickerSchema,
   type BitgetCalendar,
   type BitgetCompanyOverview,
@@ -18,6 +19,7 @@ import {
   type BitgetOrderBook,
   type BitgetResponse,
   type BitgetStockInfo,
+  type BitgetSuspensionResumption,
   type BitgetTicker,
 } from '../../contracts/bitget.js';
 import { classifyProviderFailure, ProbeError } from '../../lib/errors.js';
@@ -136,13 +138,44 @@ export function normalizeStockInfo(raw: unknown, httpStatus = 200): BitgetStockI
   return response.data;
 }
 
-export function normalizeCompanyOverview(raw: unknown, httpStatus = 200): BitgetCompanyOverview[] {
+export function normalizeCompanyOverview(
+  raw: unknown,
+  expectedCode?: string,
+  httpStatus = 200,
+): BitgetCompanyOverview[] {
   const response = parseBitgetResponse(
     raw,
     z.union([z.array(CompanyOverviewSchema), CompanyOverviewSchema]),
     httpStatus,
   );
-  return Array.isArray(response.data) ? response.data : [response.data];
+  const records = Array.isArray(response.data) ? response.data : [response.data];
+  if (expectedCode !== undefined) {
+    for (const record of records) {
+      if (record.code !== undefined && record.code !== null && record.code !== expectedCode) {
+        throw new ProbeError(
+          'malformed_provider_data',
+          `Bitget company overview code mismatch: requested ${expectedCode}, received ${record.code}`,
+        );
+      }
+    }
+  }
+  return records;
+}
+
+export function normalizeSuspensionResumption(
+  raw: unknown,
+  expectedCode: string,
+  httpStatus = 200,
+): BitgetSuspensionResumption {
+  const response = parseBitgetResponse(raw, SuspensionResumptionSchema, httpStatus);
+  const returnedCode = response.data.code;
+  if (returnedCode !== undefined && returnedCode !== null && returnedCode !== expectedCode) {
+    throw new ProbeError(
+      'malformed_provider_data',
+      `Bitget suspension response code mismatch: requested ${expectedCode}, received ${returnedCode}`,
+    );
+  }
+  return response.data;
 }
 
 export function normalizeMarketStates(raw: unknown, httpStatus = 200): BitgetMarket[] {

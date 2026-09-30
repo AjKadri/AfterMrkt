@@ -4,8 +4,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { deriveHistoricalBaseline } from '../src/domain/baselines.js';
 import { createReplayCase, ReplayEngine, ReplayError } from '../src/domain/replay.js';
+import { canonicalJson } from '../src/lib/canonical.js';
+import { sha256 } from '../src/lib/hash.js';
 import { InMemoryCaptureStore, FileCaptureStore } from '../src/persistence/store.js';
 import type { MarketSnapshotInput } from '../src/persistence/types.js';
+import type { EventAnalysis, SourceEvent } from '../src/contracts/events.js';
 import { TEST_FIXTURE_SOURCE, testSnapshot } from './fixtures/market.js';
 
 const REPLAY_AS_OF = '2026-09-29T22:00:00.000Z';
@@ -153,6 +156,38 @@ describe('capture persistence and replay', () => {
       }),
     ).toThrow(ReplayError);
   });
+
+  it('references only source events available by replay time and separates later analyses', async () => {
+    const store = new InMemoryCaptureStore();
+    const marketSnapshot = await store.saveMarketSnapshot(marketInput);
+    const orderBookSnapshot = await store.saveOrderBook(testSnapshot());
+    const pastEvent = testEvent('past-event', '2026-09-29T21:00:00.000Z');
+    const futureEvent = testEvent('future-event', '2026-09-29T23:00:00.000Z');
+    await store.saveSourceEvent(pastEvent);
+    await store.saveSourceEvent(futureEvent);
+    await store.saveEventAnalysis(testAnalysis(pastEvent.eventId, '2026-09-30T00:00:00.000Z'));
+    const replayCase = await store.saveReplayCase(
+      createReplayCase({
+        providerSymbol: 'RMUUSDT',
+        nativeTicker: 'MU',
+        replayAsOf: REPLAY_AS_OF,
+        marketSnapshot,
+        orderBookSnapshot,
+        marketStateSnapshot: null,
+        sourceEvents: [pastEvent, futureEvent],
+        manifestCreatedAt: '2026-09-30T00:00:00.000Z',
+      }),
+    );
+    expect(replayCase.manifest.eventIds).toEqual([pastEvent.eventId]);
+    const result = await new ReplayEngine(store).simulate(replayCase.manifest.caseId, {
+      requestedQuantity: '1',
+    });
+    expect(result.data.events.map((event) => event.eventId)).toEqual([pastEvent.eventId]);
+    expect(result.data.analyses).toHaveLength(0);
+    expect(result.data.laterAnalyses.map((analysis) => analysis.analysisId)).toEqual([
+      sha256('analysis-past-event'),
+    ]);
+  });
 });
 
 describe('historical baseline structures', () => {
@@ -182,3 +217,57 @@ describe('historical baseline structures', () => {
     expect(ready.limitations.some((item) => item.includes('percentile'))).toBe(true);
   });
 });
+
+function testEvent(externalId: string, sourceAvailableAt: string): SourceEvent {
+  const rawContentHash = sha256(externalId);
+  return {
+    eventId: sha256(canonicalJson({ externalId, rawContentHash })),
+    providerSymbol: 'RMUUSDT',
+    nativeTicker: 'MU',
+    sourceType: 'test-fixture',
+    sourceName: 'test source',
+    sourceUrl: `https://example.test/events/${externalId}`,
+    externalId,
+    title: externalId,
+    excerpt: `Evidence for ${externalId}`,
+    publishedAt: null,
+    eventOccurredAt: null,
+    sourceAvailableAt,
+    retrievedAt: sourceAvailableAt,
+    category: 'financial_event',
+    rawContentHash,
+    details: {},
+  };
+}
+
+function testAnalysis(eventId: string, processedAt: string): EventAnalysis {
+  return {
+    analysisId: sha256('analysis-past-event'),
+    eventId,
+    model: 'qwen3.8-max',
+    providerReportedModel: 'qwen3.8-max',
+    promptVersion: 'event-evidence-v2',
+    schemaVersion: 'event-analysis-v2',
+    eventType: 'earnings',
+    entities: [],
+    status: 'validated',
+    materiality: 'possibly_material',
+    facts: [],
+    uncertainties: [],
+    evidenceSpans: [],
+    confidence: 0.5,
+    sourceBound: true,
+    inputTokens: 1,
+    outputTokens: 1,
+    totalTokens: 2,
+    cacheTokens: 0,
+    providerReportedCostUsd: null,
+    estimatedCost: null,
+    latencyMs: 1,
+    processedAt,
+    attemptCount: 1,
+    retryReason: null,
+    errorCode: null,
+    validationIssues: [],
+  };
+}

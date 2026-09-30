@@ -1,4 +1,5 @@
 import type { BitgetMarket } from '../contracts/bitget.js';
+import type { EventAnalysis, SourceEvent } from '../contracts/events.js';
 import type {
   NormalizedRealityInstrument,
   NormalizedTicker,
@@ -69,6 +70,7 @@ export type ReplayManifest = {
   orderBookSnapshotId: string;
   marketStateSnapshotId: string | null;
   sources: ReplaySourceReference[];
+  eventIds?: string[];
   manifestCreatedAt: string;
   manifestHash: string;
 };
@@ -129,6 +131,12 @@ export type CaptureStore = {
   saveReplayOutcome(outcome: ReplayOutcomeReference): Promise<ReplayOutcomeReference>;
   listReplayOutcomes(caseId: string): Promise<ReplayOutcomeReference[]>;
   appendCollectionError(record: CollectionErrorRecord): Promise<CollectionErrorRecord>;
+  saveSourceEvent(event: SourceEvent): Promise<SourceEvent>;
+  getSourceEvent(eventId: string): Promise<SourceEvent | null>;
+  listSourceEvents(providerSymbol?: string): Promise<SourceEvent[]>;
+  saveEventAnalysis(analysis: EventAnalysis): Promise<EventAnalysis>;
+  getEventAnalysis(analysisId: string): Promise<EventAnalysis | null>;
+  listEventAnalyses(eventId?: string): Promise<EventAnalysis[]>;
 };
 
 export function marketSnapshotInputFromTicker(ticker: NormalizedTicker): MarketSnapshotInput {

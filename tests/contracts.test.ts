@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   normalizeInstruments,
+  normalizeCompanyOverview,
   normalizeOrderBook,
+  normalizeSuspensionResumption,
   normalizeTicker,
   normalizeTickerData,
   parseBitgetResponse,
@@ -130,5 +132,37 @@ describe('Bitget provider contracts', () => {
     expect(result.quoteVolume).toBeNull();
     expect(result.turnoverObservations.turnover24h.units).toBe('unknown');
     expect(result.turnoverObservations.platformTurnover24h.safeForClassification).toBe(false);
+  });
+
+  it('normalizes native-code company overview and nullable suspension records', () => {
+    const overview = normalizeCompanyOverview(
+      {
+        code: '00000',
+        msg: 'success',
+        data: { code: 'NVDA', name: 'Nvidia', listingDate: '1999-01-22' },
+      },
+      'NVDA',
+    );
+    const suspension = normalizeSuspensionResumption(
+      {
+        code: '00000',
+        msg: 'success',
+        data: {
+          code: null,
+          name: null,
+          suspensionDate: null,
+          suspensionTime: null,
+          suspensionReason: null,
+          suspensionPrice: null,
+          resumptionDate: null,
+          resumptionQuoteTime: null,
+          resumptionTradingTime: null,
+        },
+      },
+      'NVDA',
+    );
+    expect(overview[0]?.code).toBe('NVDA');
+    expect(overview[0]?.listingDate).toBe('1999-01-22');
+    expect(suspension.code).toBeNull();
   });
 });

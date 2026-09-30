@@ -1,5 +1,6 @@
 import { canonicalJson } from '../lib/canonical.js';
 import { sha256 } from '../lib/hash.js';
+import type { EventAnalysis, SourceEvent } from '../contracts/events.js';
 import {
   calculateMarketMetrics,
   resolveMarketQualityConfig,
@@ -28,6 +29,7 @@ export type ReplayManifestInput = {
   marketSnapshot: MarketSnapshot;
   orderBookSnapshot: OrderBookSnapshot;
   marketStateSnapshot: MarketStateSnapshot | null;
+  sourceEvents?: SourceEvent[];
   manifestCreatedAt: string;
 };
 
@@ -50,6 +52,9 @@ export type ReplaySimulationResult = {
     marketStateSnapshot: MarketStateSnapshot | null;
     metrics: MarketMetrics;
     simulation: ExitSimulation;
+    events: SourceEvent[];
+    analyses: EventAnalysis[];
+    laterAnalyses: EventAnalysis[];
   };
   sourceRefs: SourceReference[];
   warnings: string[];
@@ -83,8 +88,10 @@ export function createReplayCase(input: ReplayManifestInput): ReplayCase {
         marketSnapshotId: input.marketSnapshot.snapshotId,
         orderBookSnapshotId: input.orderBookSnapshot.snapshotId,
         marketStateSnapshotId: input.marketStateSnapshot?.snapshotId ?? null,
+        eventIds: qualifyingEventIds(input.sourceEvents ?? [], input.replayAsOf),
       }),
     );
+  const eventIds = qualifyingEventIds(input.sourceEvents ?? [], input.replayAsOf);
   const withoutHash = {
     caseId,
     providerSymbol: input.providerSymbol,
@@ -94,6 +101,7 @@ export function createReplayCase(input: ReplayManifestInput): ReplayCase {
     orderBookSnapshotId: input.orderBookSnapshot.snapshotId,
     marketStateSnapshotId: input.marketStateSnapshot?.snapshotId ?? null,
     sources,
+    eventIds,
     manifestCreatedAt: input.manifestCreatedAt,
   } satisfies Omit<ReplayManifest, 'manifestHash'>;
   const manifest: ReplayManifest = {
@@ -118,6 +126,7 @@ export class ReplayEngine {
     if (replayCase !== null) {
       assertManifestHash(replayCase.manifest);
       assertSourcesAvailableBy(replayCase.manifest.replayAsOf, replayCase.manifest.sources);
+      await this.assertEventsAvailable(replayCase.manifest);
     }
     return replayCase;
   }
@@ -130,13 +139,19 @@ export class ReplayEngine {
     const { manifest } = replayCase;
     assertManifestHash(manifest);
     assertSourcesAvailableBy(manifest.replayAsOf, manifest.sources);
-    const [marketSnapshot, orderBookSnapshot, marketStateSnapshot] = await Promise.all([
-      this.store.getMarketSnapshot(manifest.marketSnapshotId),
-      this.store.getOrderBook(manifest.orderBookSnapshotId),
-      manifest.marketStateSnapshotId === null
-        ? Promise.resolve(null)
-        : this.store.getMarketStateSnapshot(manifest.marketStateSnapshotId),
-    ]);
+    const events = await this.loadReplayEvents(manifest);
+    const [marketSnapshot, orderBookSnapshot, marketStateSnapshot, allAnalyses] = await Promise.all(
+      [
+        this.store.getMarketSnapshot(manifest.marketSnapshotId),
+        this.store.getOrderBook(manifest.orderBookSnapshotId),
+        manifest.marketStateSnapshotId === null
+          ? Promise.resolve(null)
+          : this.store.getMarketStateSnapshot(manifest.marketStateSnapshotId),
+        Promise.all(events.map((event) => this.store.listEventAnalyses(event.eventId))).then(
+          (groups) => groups.flat(),
+        ),
+      ],
+    );
     if (marketSnapshot === null || orderBookSnapshot === null) {
       throw new ReplayError(
         'replay_snapshot_not_found',
@@ -173,6 +188,11 @@ export class ReplayEngine {
     });
     const freshness = simulation.freshness;
     const sourceRefs = manifest.sources.map(toSourceReference);
+    const replayMs = replayTime.getTime();
+    const analyses = allAnalyses.filter((analysis) => Date.parse(analysis.processedAt) <= replayMs);
+    const laterAnalyses = allAnalyses.filter(
+      (analysis) => Date.parse(analysis.processedAt) > replayMs,
+    );
     const warnings =
       freshness.state === 'fresh'
         ? []
@@ -191,6 +211,9 @@ export class ReplayEngine {
         marketStateSnapshot,
         metrics,
         simulation,
+        events,
+        analyses,
+        laterAnalyses,
       },
       sourceRefs,
       warnings,
@@ -198,8 +221,28 @@ export class ReplayEngine {
         'Replay uses immutable captured provider responses and makes no external provider calls.',
         'Execution results are observed-book estimates, not guaranteed fills.',
         'Later outcome references are stored separately and never alter the captured state.',
+        'Source availability and analysis processing time are kept separate. Analyses processed after replayAsOf are reported as laterAnalyses.',
       ],
     };
+  }
+
+  private async loadReplayEvents(manifest: ReplayManifest): Promise<SourceEvent[]> {
+    const eventIds = manifest.eventIds ?? [];
+    const events = await Promise.all(eventIds.map((eventId) => this.store.getSourceEvent(eventId)));
+    const missing = eventIds.find((_, index) => events[index] === null);
+    if (missing !== undefined) {
+      throw new ReplayError(
+        'replay_snapshot_not_found',
+        `replay manifest references a missing source event ${missing}`,
+      );
+    }
+    const resolved = events.filter((event): event is SourceEvent => event !== null);
+    assertEventsAvailableBy(manifest.replayAsOf, resolved);
+    return resolved;
+  }
+
+  private async assertEventsAvailable(manifest: ReplayManifest): Promise<void> {
+    await this.loadReplayEvents(manifest);
   }
 }
 
@@ -290,6 +333,42 @@ function assertSourcesAvailableBy(replayAsOf: string, sources: ReplaySourceRefer
       throw new ReplayError(
         'replay_manifest_invalid',
         `source ${source.snapshotId} became available after replayAsOf and is excluded`,
+      );
+    }
+  }
+}
+
+function qualifyingEventIds(events: SourceEvent[], replayAsOf: string): string[] {
+  const replayMs = Date.parse(replayAsOf);
+  if (!Number.isFinite(replayMs)) {
+    throw new ReplayError('replay_manifest_invalid', 'replayAsOf is not a valid timestamp');
+  }
+  return events
+    .filter((event) => {
+      const availableMs = Date.parse(event.sourceAvailableAt);
+      if (!Number.isFinite(availableMs)) {
+        throw new ReplayError(
+          'replay_manifest_invalid',
+          `source event ${event.eventId} has an invalid availability timestamp`,
+        );
+      }
+      return availableMs <= replayMs;
+    })
+    .map((event) => event.eventId)
+    .sort();
+}
+
+function assertEventsAvailableBy(replayAsOf: string, events: SourceEvent[]): void {
+  const replayMs = Date.parse(replayAsOf);
+  if (!Number.isFinite(replayMs)) {
+    throw new ReplayError('replay_manifest_invalid', 'replayAsOf is not a valid timestamp');
+  }
+  for (const event of events) {
+    const availableMs = Date.parse(event.sourceAvailableAt);
+    if (!Number.isFinite(availableMs) || availableMs > replayMs) {
+      throw new ReplayError(
+        'replay_manifest_invalid',
+        `source event ${event.eventId} was not available by replayAsOf`,
       );
     }
   }

@@ -6,6 +6,9 @@ import type { ProviderRecord, NormalizedOrderBook } from '../src/domain/types.js
 import { InMemorySnapshotStore } from '../src/domain/snapshots.js';
 import { createReplayCase } from '../src/domain/replay.js';
 import { InMemoryCaptureStore } from '../src/persistence/store.js';
+import { canonicalJson } from '../src/lib/canonical.js';
+import { sha256 } from '../src/lib/hash.js';
+import type { SourceEvent } from '../src/contracts/events.js';
 import { TEST_FIXTURE_SOURCE, testMarketSnapshotInput, testSnapshot } from './fixtures/market.js';
 
 const NOW = new Date('2026-09-29T22:00:00.000Z');
@@ -107,6 +110,47 @@ describe('AfterMrkt API contracts', () => {
       expect(response.status).toBe(400);
       const body = (await response.json()) as { error: { code: string } };
       expect(body.error.code).toBe('INVALID_REQUEST');
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
+
+  it('exposes persisted source events and pending analysis without invoking Qwen', async () => {
+    const eventStore = new InMemoryCaptureStore();
+    const event = testEvent();
+    await eventStore.saveSourceEvent(event);
+    const server = createApiServer({
+      marketData: testProvider(),
+      eventStore,
+      now: () => NOW,
+    });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('test server did not expose a port');
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    try {
+      const listResponse = await fetch(`${baseUrl}/api/instruments/RMUUSDT/events`);
+      expect(listResponse.status).toBe(200);
+      const listBody = (await listResponse.json()) as {
+        data: { events: SourceEvent[]; eventContext: { label: string } };
+      };
+      expect(listBody.data.events).toHaveLength(1);
+      expect(listBody.data.eventContext.label).toBe('insufficient-event-evidence');
+
+      const eventResponse = await fetch(`${baseUrl}/api/events/${event.eventId}`);
+      expect(eventResponse.status).toBe(200);
+      expect((await eventResponse.json()) as { data: { latestAnalysis: unknown } }).toMatchObject({
+        data: { latestAnalysis: null },
+      });
+
+      const analysisResponse = await fetch(`${baseUrl}/api/events/${event.eventId}/analysis`);
+      expect(analysisResponse.status).toBe(200);
+      expect((await analysisResponse.json()) as { data: { status: string } }).toMatchObject({
+        data: { status: 'pending' },
+      });
     } finally {
       server.close();
       await once(server, 'close');
@@ -280,5 +324,27 @@ function testProvider(): PublicMarketDataProvider {
       source: TEST_FIXTURE_SOURCE,
       data: { timeZone: 'UTC' },
     }),
+  };
+}
+
+function testEvent(): SourceEvent {
+  const rawContentHash = sha256('api event fixture');
+  return {
+    eventId: sha256(canonicalJson({ rawContentHash, externalId: 'api-event' })),
+    providerSymbol: 'RMUUSDT',
+    nativeTicker: 'MU',
+    sourceType: 'test-fixture',
+    sourceName: 'test source',
+    sourceUrl: 'https://example.test/events/api-event',
+    externalId: 'api-event',
+    title: 'API event fixture',
+    excerpt: 'The source reports a filing.',
+    publishedAt: null,
+    eventOccurredAt: null,
+    sourceAvailableAt: '2026-09-29T20:01:00.000Z',
+    retrievedAt: '2026-09-29T20:02:00.000Z',
+    category: 'financial_event',
+    rawContentHash,
+    details: {},
   };
 }

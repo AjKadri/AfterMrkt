@@ -94,6 +94,19 @@ export type NormalizedFill = {
   providerTimestamp: string | null;
 };
 
+export type NormalizedSuspensionResumption = {
+  nativeTicker: string;
+  recordStatus: 'recorded' | 'not-available';
+  companyName: string | null;
+  suspensionDate: string | null;
+  suspensionTime: string | null;
+  suspensionReason: string | null;
+  suspensionPrice: string | null;
+  resumptionDate: string | null;
+  resumptionQuoteTime: string | null;
+  resumptionTradingTime: string | null;
+};
+
 export type NormalizedCandle = {
   openTime: string;
   open: string;

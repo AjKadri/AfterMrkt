@@ -32,6 +32,7 @@ export type ApiEnvelope<T> = {
 export type ApiErrorCode =
   | 'INVALID_REQUEST'
   | 'INSTRUMENT_NOT_FOUND'
+  | 'EVENT_NOT_FOUND'
   | 'SNAPSHOT_NOT_FOUND'
   | 'PROVIDER_UNAVAILABLE'
   | 'PROVIDER_AUTHENTICATION_INVALID'

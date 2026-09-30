@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { canonicalJson } from '../lib/canonical.js';
 import { sha256 } from '../lib/hash.js';
 import { orderBookSnapshotId } from '../domain/snapshots.js';
+import type { EventAnalysis, SourceEvent } from '../contracts/events.js';
 import type { NormalizedOrderBook, OrderBookSnapshot } from '../domain/types.js';
 import type {
   CaptureStore,
@@ -24,6 +25,8 @@ export class InMemoryCaptureStore implements CaptureStore {
   private readonly replayCases = new Map<string, ReplayCase>();
   private readonly replayOutcomes = new Map<string, ReplayOutcomeReference>();
   private readonly collectionErrors = new Map<string, CollectionErrorRecord>();
+  private readonly sourceEvents = new Map<string, SourceEvent>();
+  private readonly eventAnalyses = new Map<string, EventAnalysis>();
 
   async saveInstrument(record: PersistedInstrument): Promise<PersistedInstrument> {
     const stored = deepFreeze(record);
@@ -115,6 +118,55 @@ export class InMemoryCaptureStore implements CaptureStore {
     const stored = deepFreeze(record);
     this.collectionErrors.set(record.errorId, stored);
     return stored;
+  }
+
+  async saveSourceEvent(event: SourceEvent): Promise<SourceEvent> {
+    const existing = this.sourceEvents.get(event.eventId);
+    if (existing !== undefined) {
+      if (
+        canonicalJson(withoutKeys(existing, new Set(['retrievedAt']))) !==
+        canonicalJson(withoutKeys(event, new Set(['retrievedAt'])))
+      ) {
+        throw new Error(`immutable source event conflict at ${event.eventId}`);
+      }
+      return existing;
+    }
+    const stored = deepFreeze(event);
+    this.sourceEvents.set(event.eventId, stored);
+    return stored;
+  }
+
+  async getSourceEvent(eventId: string): Promise<SourceEvent | null> {
+    return this.sourceEvents.get(eventId) ?? null;
+  }
+
+  async listSourceEvents(providerSymbol?: string): Promise<SourceEvent[]> {
+    return [...this.sourceEvents.values()]
+      .filter((event) => providerSymbol === undefined || event.providerSymbol === providerSymbol)
+      .sort((left, right) => left.sourceAvailableAt.localeCompare(right.sourceAvailableAt));
+  }
+
+  async saveEventAnalysis(analysis: EventAnalysis): Promise<EventAnalysis> {
+    const existing = this.eventAnalyses.get(analysis.analysisId);
+    if (existing !== undefined) {
+      if (canonicalJson(existing) !== canonicalJson(analysis)) {
+        throw new Error(`immutable event analysis conflict at ${analysis.analysisId}`);
+      }
+      return existing;
+    }
+    const stored = deepFreeze(analysis);
+    this.eventAnalyses.set(analysis.analysisId, stored);
+    return stored;
+  }
+
+  async getEventAnalysis(analysisId: string): Promise<EventAnalysis | null> {
+    return this.eventAnalyses.get(analysisId) ?? null;
+  }
+
+  async listEventAnalyses(eventId?: string): Promise<EventAnalysis[]> {
+    return [...this.eventAnalyses.values()]
+      .filter((analysis) => eventId === undefined || analysis.eventId === eventId)
+      .sort((left, right) => left.processedAt.localeCompare(right.processedAt));
   }
 }
 
@@ -233,6 +285,40 @@ export class FileCaptureStore implements CaptureStore {
     return deepFreeze(record);
   }
 
+  async saveSourceEvent(event: SourceEvent): Promise<SourceEvent> {
+    const path = this.path('source-events', `${event.eventId}.json`);
+    const existing = await writeImmutable(path, event, false, ['retrievedAt']);
+    return deepFreeze((existing as SourceEvent | null) ?? event);
+  }
+
+  async getSourceEvent(eventId: string): Promise<SourceEvent | null> {
+    return readStored<SourceEvent>(this.path('source-events', `${eventId}.json`));
+  }
+
+  async listSourceEvents(providerSymbol?: string): Promise<SourceEvent[]> {
+    const events = await readDirectoryRecords<SourceEvent>(this.path('source-events'));
+    return events
+      .filter((event) => providerSymbol === undefined || event.providerSymbol === providerSymbol)
+      .sort((left, right) => left.sourceAvailableAt.localeCompare(right.sourceAvailableAt));
+  }
+
+  async saveEventAnalysis(analysis: EventAnalysis): Promise<EventAnalysis> {
+    const path = this.path('event-analyses', `${analysis.analysisId}.json`);
+    const existing = await writeImmutable(path, analysis);
+    return deepFreeze((existing as EventAnalysis | null) ?? analysis);
+  }
+
+  async getEventAnalysis(analysisId: string): Promise<EventAnalysis | null> {
+    return readStored<EventAnalysis>(this.path('event-analyses', `${analysisId}.json`));
+  }
+
+  async listEventAnalyses(eventId?: string): Promise<EventAnalysis[]> {
+    const analyses = await readDirectoryRecords<EventAnalysis>(this.path('event-analyses'));
+    return analyses
+      .filter((analysis) => eventId === undefined || analysis.eventId === eventId)
+      .sort((left, right) => left.processedAt.localeCompare(right.processedAt));
+  }
+
   private path(directory: string, filename?: string): string {
     return filename === undefined
       ? join(this.rootDirectory, directory)
@@ -284,11 +370,14 @@ async function writeImmutable(
   path: string,
   value: unknown,
   ignoreReceivedAt = false,
+  ignoredKeys: string[] = [],
 ): Promise<unknown | null> {
   const existing = await readStored<unknown>(path);
   if (existing !== null) {
-    const existingComparable = ignoreReceivedAt ? withoutReceivedAt(existing) : existing;
-    const valueComparable = ignoreReceivedAt ? withoutReceivedAt(value) : value;
+    const keys = new Set(ignoredKeys);
+    if (ignoreReceivedAt) keys.add('receivedAt');
+    const existingComparable = keys.size === 0 ? existing : withoutKeys(existing, keys);
+    const valueComparable = keys.size === 0 ? value : withoutKeys(value, keys);
     if (canonicalJson(existingComparable) !== canonicalJson(valueComparable)) {
       throw new Error(`immutable capture conflict at ${path}`);
     }
@@ -301,14 +390,14 @@ async function writeImmutable(
   return null;
 }
 
-function withoutReceivedAt(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(withoutReceivedAt);
+function withoutKeys(value: unknown, keys: Set<string>): unknown {
+  if (Array.isArray(value)) return value.map((item) => withoutKeys(item, keys));
   if (value !== null && typeof value === 'object') {
     const record = value as Record<string, unknown>;
     return Object.fromEntries(
       Object.entries(record)
-        .filter(([key]) => key !== 'receivedAt')
-        .map(([key, child]) => [key, withoutReceivedAt(child)]),
+        .filter(([key]) => !keys.has(key))
+        .map(([key, child]) => [key, withoutKeys(child, keys)]),
     );
   }
   return value;
@@ -322,6 +411,23 @@ async function readStored<T>(path: string): Promise<T | null> {
     if (isNotFound(error)) return null;
     throw error;
   }
+}
+
+async function readDirectoryRecords<T>(directory: string): Promise<T[]> {
+  const { readdir } = await import('node:fs/promises');
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if (isNotFound(error)) return [];
+    throw error;
+  }
+  const records = await Promise.all(
+    names
+      .filter((name) => name.endsWith('.json'))
+      .map((name) => readStored<T>(join(directory, name))),
+  );
+  return records.filter((record) => record !== null) as T[];
 }
 
 function isNotFound(error: unknown): boolean {

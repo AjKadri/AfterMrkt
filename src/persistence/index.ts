@@ -20,3 +20,4 @@ export type {
   ReplayOutcomeReference,
   ReplaySourceReference,
 } from './types.js';
+export type { EventAnalysis, SourceEvent } from '../contracts/events.js';

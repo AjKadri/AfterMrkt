@@ -101,7 +101,36 @@ export const StockInfoSchema = z
   })
   .passthrough();
 
-export const CompanyOverviewSchema = z.record(z.string(), z.unknown());
+export const CompanyOverviewSchema = z
+  .object({
+    code: z.string().nullable().optional(),
+    name: z.string().nullable().optional(),
+    peRatio: NullableStringLike.optional(),
+    pbRatio: NullableStringLike.optional(),
+    totalShares: NullableStringLike.optional(),
+    marketCap: NullableStringLike.optional(),
+    high52Week: NullableStringLike.optional(),
+    low52Week: NullableStringLike.optional(),
+    listingDate: z.string().nullable().optional(),
+    ListingDate: z.string().nullable().optional(),
+    employees: NullableStringLike.optional(),
+    companyAddress: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+export const SuspensionResumptionSchema = z
+  .object({
+    code: z.string().nullable().optional(),
+    name: z.string().nullable().optional(),
+    suspensionDate: z.string().nullable().optional(),
+    suspensionTime: z.string().nullable().optional(),
+    suspensionReason: z.string().nullable().optional(),
+    suspensionPrice: NullableStringLike.optional(),
+    resumptionDate: z.string().nullable().optional(),
+    resumptionQuoteTime: z.string().nullable().optional(),
+    resumptionTradingTime: z.string().nullable().optional(),
+  })
+  .passthrough();
 
 export const MarketStateSchema = z
   .object({
@@ -142,6 +171,7 @@ export type BitgetOrderBook = z.infer<typeof OrderBookSchema>;
 export type BitgetFill = z.infer<typeof FillSchema>;
 export type BitgetStockInfo = z.infer<typeof StockInfoSchema>;
 export type BitgetCompanyOverview = z.infer<typeof CompanyOverviewSchema>;
+export type BitgetSuspensionResumption = z.infer<typeof SuspensionResumptionSchema>;
 export type BitgetMarket = z.infer<typeof MarketSchema>;
 export type BitgetCalendar = z.infer<typeof CalendarSchema>;
 

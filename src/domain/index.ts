@@ -26,6 +26,26 @@ export {
   observationFromMarket,
 } from './baselines.js';
 export { createReplayCase, ReplayEngine, ReplayError } from './replay.js';
+export {
+  EventAnalysisService,
+  buildEvidencePacket,
+  buildQwenUsageLedger,
+  isTransientQwenFailure,
+  validateEvidenceBinding,
+} from './event-analysis.js';
+export type {
+  EventAnalysisClient,
+  EvidenceBindingIssue,
+  QwenUsageLedger,
+} from './event-analysis.js';
+export {
+  deduplicateSourceEvents,
+  deriveEventContext,
+  uncheckedEventContext,
+} from './event-context.js';
+export type { EventContext, EventContextLabel } from './event-context.js';
+export { evaluatePostCloseWindow, resolveRegularSessionClose } from './event-window.js';
+export type { EventWindowResult, EventWindowStatus } from './event-window.js';
 export type { BaselineConfig, HistoricalObservation } from './baselines.js';
 export type {
   ReplayManifestInput,

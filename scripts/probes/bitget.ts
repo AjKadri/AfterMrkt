@@ -9,6 +9,7 @@ import {
   normalizeMarketStates,
   normalizeOrderBook,
   normalizeStockInfo,
+  normalizeSuspensionResumption,
   normalizeTicker,
   selectRealityInstruments,
 } from '../../src/adapters/bitget/index.js';
@@ -182,15 +183,34 @@ if (comparisonSymbol) {
       capability: `bitget.reality.company-overview.${comparisonSymbol}`,
       request: {
         method: 'GET',
-        url: buildUrl('/api/v3/reality/market/company-overview', { symbol: comparisonSymbol }),
+        url: buildUrl('/api/v3/reality/market/company-overview', { code: comparisonSymbol }),
       },
       action: async () =>
         toCapture(
           await client.get('/api/v3/reality/market/company-overview', {
-            symbol: comparisonSymbol,
+            code: comparisonSymbol,
           }),
         ),
-      normalize: (payload) => normalizeCompanyOverview(payload),
+      normalize: (payload) => normalizeCompanyOverview(payload, comparisonSymbol),
+      outputDirectory: evidenceDirectory,
+    }),
+  );
+  runs.push(
+    await executeProbe({
+      capability: `bitget.reality.suspension-resumption.${comparisonSymbol}`,
+      request: {
+        method: 'GET',
+        url: buildUrl('/api/v3/reality/market/suspension-resumption-info', {
+          code: comparisonSymbol,
+        }),
+      },
+      action: async () =>
+        toCapture(
+          await client.get('/api/v3/reality/market/suspension-resumption-info', {
+            code: comparisonSymbol,
+          }),
+        ),
+      normalize: (payload) => normalizeSuspensionResumption(payload, comparisonSymbol),
       outputDirectory: evidenceDirectory,
     }),
   );

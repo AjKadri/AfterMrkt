@@ -20,7 +20,9 @@
     "probe:mcp-transport": "tsx scripts/probes/mcp-transport.ts",
     "probe:orderbook-asymmetry": "tsx scripts/probes/orderbook-asymmetry.ts",
     "probe:qwen": "tsx scripts/probes/qwen.ts",
-    "probe:replay": "tsx scripts/probes/replay.ts"
+    "probe:replay": "tsx scripts/probes/replay.ts",
+    "probe:reality-events": "tsx scripts/probes/reality-events.ts",
+    "probe:event-pipeline": "tsx scripts/probes/event-pipeline.ts"
   },
   "dependencies": {
     "decimal.js": "^10.6.0",

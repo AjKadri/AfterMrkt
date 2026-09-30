@@ -5,6 +5,7 @@ import type {
   BitgetInstrument,
   BitgetMarket,
   BitgetStockInfo,
+  BitgetSuspensionResumption,
   BitgetTicker,
 } from '../../contracts/bitget.js';
 import { hashRawResponse } from '../../observability/evidence.js';
@@ -14,6 +15,7 @@ import type {
   NormalizedFill,
   NormalizedOrderBook,
   NormalizedRealityInstrument,
+  NormalizedSuspensionResumption,
   NormalizedTicker,
   ProviderRecord,
   SourceMetadata,
@@ -34,6 +36,7 @@ import {
   normalizeMarketStates,
   normalizeOrderBook,
   normalizeStockInfo,
+  normalizeSuspensionResumption,
   normalizeTicker,
   normalizeTickers,
   selectRealityInstruments,
@@ -58,7 +61,10 @@ export type PublicMarketDataProvider = {
     query?: CandleQuery,
   ): Promise<ProviderRecord<NormalizedCandle[]>>;
   getStockInfo(symbol?: string): Promise<ProviderRecord<BitgetStockInfo[]>>;
-  getCompanyOverview(symbol?: string): Promise<ProviderRecord<BitgetCompanyOverview[]>>;
+  getCompanyOverview(nativeTicker?: string): Promise<ProviderRecord<BitgetCompanyOverview[]>>;
+  getSuspensionResumptionInfo?(
+    nativeTicker: string,
+  ): Promise<ProviderRecord<NormalizedSuspensionResumption>>;
   getMarketStates(): Promise<ProviderRecord<BitgetMarket[]>>;
   getMarketCalendar(): Promise<ProviderRecord<BitgetCalendar>>;
 };
@@ -184,15 +190,42 @@ export class BitgetPublicMarketDataAdapter implements PublicMarketDataProvider {
     };
   }
 
-  async getCompanyOverview(symbol?: string): Promise<ProviderRecord<BitgetCompanyOverview[]>> {
+  async getCompanyOverview(
+    nativeTicker?: string,
+  ): Promise<ProviderRecord<BitgetCompanyOverview[]>> {
     const result = await this.client.get(
       '/api/v3/reality/market/company-overview',
-      symbol === undefined ? {} : { symbol },
+      nativeTicker === undefined ? {} : { code: nativeTicker },
     );
     const source = sourceFrom(result);
     return {
       source,
-      data: normalizeCompanyOverview(result.json, result.raw.status),
+      data: normalizeCompanyOverview(result.json, nativeTicker, result.raw.status),
+    };
+  }
+
+  async getSuspensionResumptionInfo(
+    nativeTicker: string,
+  ): Promise<ProviderRecord<NormalizedSuspensionResumption>> {
+    const result = await this.client.get('/api/v3/reality/market/suspension-resumption-info', {
+      code: nativeTicker,
+    });
+    const normalized = normalizeSuspensionResumption(result.json, nativeTicker, result.raw.status);
+    const source = sourceFrom(result);
+    return {
+      source,
+      data: {
+        nativeTicker,
+        recordStatus: hasSuspensionRecord(normalized) ? 'recorded' : 'not-available',
+        companyName: normalized.name ?? null,
+        suspensionDate: normalized.suspensionDate ?? null,
+        suspensionTime: normalized.suspensionTime ?? null,
+        suspensionReason: normalized.suspensionReason ?? null,
+        suspensionPrice: normalized.suspensionPrice ?? null,
+        resumptionDate: normalized.resumptionDate ?? null,
+        resumptionQuoteTime: normalized.resumptionQuoteTime ?? null,
+        resumptionTradingTime: normalized.resumptionTradingTime ?? null,
+      },
     };
   }
 
@@ -344,7 +377,16 @@ function sourceIdForEndpoint(pathname: string): string {
   if (pathname === '/api/v3/reality/market/company-overview') {
     return 'bitget_reality_company_overview';
   }
+  if (pathname === '/api/v3/reality/market/suspension-resumption-info') {
+    return 'bitget_reality_suspension_resumption';
+  }
   return 'bitget_unknown_public_endpoint';
+}
+
+function hasSuspensionRecord(value: BitgetSuspensionResumption): boolean {
+  return Object.entries(value).some(
+    ([key, item]) => key !== 'code' && item !== null && item !== '',
+  );
 }
 
 function sourceTypeForSourceId(sourceId: string): SourceMetadata['sourceType'] {

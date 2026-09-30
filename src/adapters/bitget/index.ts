@@ -25,6 +25,7 @@ export {
   normalizeMarketStates,
   normalizeOrderBook,
   normalizeStockInfo,
+  normalizeSuspensionResumption,
   normalizeTicker,
   normalizeTickers,
   parseBitgetResponse,

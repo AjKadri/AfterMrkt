@@ -11,6 +11,7 @@ import {
   type ExecutionSimulationRequest,
 } from '../contracts/api.js';
 import { freshnessFromSource } from '../domain/freshness.js';
+import { deriveEventContext, uncheckedEventContext } from '../domain/event-context.js';
 import { ReplayEngine, ReplayError } from '../domain/replay.js';
 import {
   calculateMarketMetrics,
@@ -27,6 +28,7 @@ export type ApiServerOptions = {
   snapshots?: MarketSnapshotStore;
   replayStore?: CaptureStore;
   replayEngine?: ReplayEngine;
+  eventStore?: CaptureStore;
   now?: () => Date;
   qualityConfig?: Partial<MarketQualityConfig>;
 };
@@ -83,6 +85,33 @@ async function handleRequest(
     parts[3] === 'simulations'
   ) {
     await sendReplaySimulation(response, request, replayEngine, now, parts[2] ?? '');
+    return;
+  }
+
+  if (
+    method === 'GET' &&
+    parts.length === 4 &&
+    parts[0] === 'api' &&
+    parts[1] === 'instruments' &&
+    parts[3] === 'events'
+  ) {
+    await sendInstrumentEvents(response, options, now, parts[2] ?? '');
+    return;
+  }
+
+  if (method === 'GET' && parts.length === 3 && parts[0] === 'api' && parts[1] === 'events') {
+    await sendEvent(response, options, now, parts[2] ?? '');
+    return;
+  }
+
+  if (
+    method === 'GET' &&
+    parts.length === 4 &&
+    parts[0] === 'api' &&
+    parts[1] === 'events' &&
+    parts[3] === 'analysis'
+  ) {
+    await sendEventAnalysis(response, options, now, parts[2] ?? '');
     return;
   }
 
@@ -147,11 +176,47 @@ async function sendContext(
     options.marketData.getOrderBook(symbol),
   ]);
   let marketState: Awaited<ReturnType<PublicMarketDataProvider['getMarketStates']>> | null = null;
+  let marketCalendar: Awaited<ReturnType<PublicMarketDataProvider['getMarketCalendar']>> | null =
+    null;
+  let companyOverview: Awaited<ReturnType<PublicMarketDataProvider['getCompanyOverview']>> | null =
+    null;
+  let suspension: Awaited<
+    ReturnType<NonNullable<PublicMarketDataProvider['getSuspensionResumptionInfo']>>
+  > | null = null;
   try {
     marketState = await options.marketData.getMarketStates();
   } catch (error) {
     void error;
   }
+  try {
+    marketCalendar = await options.marketData.getMarketCalendar();
+  } catch (error) {
+    void error;
+  }
+  try {
+    companyOverview = await options.marketData.getCompanyOverview(
+      instrument.nativeTicker ?? undefined,
+    );
+  } catch (error) {
+    void error;
+  }
+  if (
+    instrument.nativeTicker !== null &&
+    options.marketData.getSuspensionResumptionInfo !== undefined
+  ) {
+    try {
+      suspension = await options.marketData.getSuspensionResumptionInfo(instrument.nativeTicker);
+    } catch (error) {
+      void error;
+    }
+  }
+  const eventContext = await contextForInstrument(
+    options.eventStore ?? options.replayStore,
+    symbol,
+    now(),
+    marketState?.data ?? null,
+    marketCalendar?.data ?? null,
+  );
   const snapshot = snapshots.saveOrderBook(orderBook.data);
   const metrics = calculateMarketMetrics(
     snapshot,
@@ -169,17 +234,164 @@ async function sendContext(
       snapshot,
       metrics,
       marketState: marketState?.data ?? null,
+      marketCalendar: marketCalendar?.data ?? null,
+      companyOverview: companyOverview?.data ?? null,
+      suspension: suspension?.data ?? null,
+      eventContext,
     },
     sourceRefs: [
       toSourceReference(universe.source, symbol, null),
       toSourceReference(ticker.source, symbol, null),
       toSourceReference(orderBook.source, symbol, snapshot.snapshotId),
       ...(marketState === null ? [] : [toSourceReference(marketState.source, null, null)]),
+      ...(marketCalendar === null ? [] : [toSourceReference(marketCalendar.source, null, null)]),
+      ...(companyOverview === null
+        ? []
+        : [toSourceReference(companyOverview.source, symbol, null)]),
+      ...(suspension === null ? [] : [toSourceReference(suspension.source, symbol, null)]),
     ],
     warnings: [
       ...freshnessWarnings(freshness),
       ...(marketState === null ? ['Market state was unavailable for this context response.'] : []),
+      ...(marketCalendar === null
+        ? ['Market calendar was unavailable for this context response.']
+        : []),
     ],
+  });
+}
+
+async function contextForInstrument(
+  store: CaptureStore | undefined,
+  symbol: string,
+  asOf: Date,
+  markets: Awaited<ReturnType<PublicMarketDataProvider['getMarketStates']>>['data'] | null,
+  calendar: Awaited<ReturnType<PublicMarketDataProvider['getMarketCalendar']>>['data'] | null,
+) {
+  if (store === undefined) return uncheckedEventContext(asOf.toISOString());
+  const events = await store.listSourceEvents(symbol);
+  const analyses = await store.listEventAnalyses();
+  return deriveEventContext({
+    events,
+    analyses,
+    contextAsOf: asOf.toISOString(),
+    markets,
+    calendar,
+    checkedAt: asOf.toISOString(),
+  });
+}
+
+async function sendInstrumentEvents(
+  response: ServerResponse,
+  options: ApiServerOptions,
+  now: () => Date,
+  symbol: string,
+): Promise<void> {
+  const store = options.eventStore ?? options.replayStore;
+  if (store === undefined) {
+    const checkedAt = now().toISOString();
+    sendEnvelope(response, {
+      mode: 'LIVE',
+      asOf: checkedAt,
+      freshness: unavailableFreshness('event storage is not configured'),
+      data: { events: [], analyses: [], eventContext: uncheckedEventContext(checkedAt) },
+      sourceRefs: [],
+      warnings: ['No persisted event source is configured.'],
+    });
+    return;
+  }
+  const events = await store.listSourceEvents(symbol);
+  const analyses = await store.listEventAnalyses();
+  let markets: Awaited<ReturnType<PublicMarketDataProvider['getMarketStates']>>['data'] | null =
+    null;
+  let calendar: Awaited<ReturnType<PublicMarketDataProvider['getMarketCalendar']>>['data'] | null =
+    null;
+  try {
+    markets = (await options.marketData.getMarketStates()).data;
+  } catch (error) {
+    void error;
+  }
+  try {
+    calendar = (await options.marketData.getMarketCalendar()).data;
+  } catch (error) {
+    void error;
+  }
+  const asOf = now();
+  const eventContext = deriveEventContext({
+    events,
+    analyses,
+    contextAsOf: asOf.toISOString(),
+    markets,
+    calendar,
+    checkedAt: asOf.toISOString(),
+  });
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: asOf.toISOString(),
+    freshness: unavailableFreshness(
+      'event records use source availability and analysis timestamps',
+    ),
+    data: { events, analyses, eventContext },
+    sourceRefs: [],
+    warnings: eventContext.reasons,
+  });
+}
+
+async function sendEvent(
+  response: ServerResponse,
+  options: ApiServerOptions,
+  now: () => Date,
+  eventId: string,
+): Promise<void> {
+  const store = options.eventStore ?? options.replayStore;
+  if (store === undefined) {
+    sendError(response, now(), 'EVENT_NOT_FOUND', `event ${eventId} was not found`, 404);
+    return;
+  }
+  const event = await store.getSourceEvent(eventId);
+  if (event === null) {
+    sendError(response, now(), 'EVENT_NOT_FOUND', `event ${eventId} was not found`, 404);
+    return;
+  }
+  const analyses = await store.listEventAnalyses(eventId);
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: event.sourceAvailableAt,
+    freshness: unavailableFreshness(
+      'event freshness is represented by sourceAvailableAt and retrievedAt',
+    ),
+    data: { event, latestAnalysis: analyses.at(-1) ?? null },
+    sourceRefs: [],
+    warnings: analyses.length === 0 ? ['Analysis is pending for this source event.'] : [],
+  });
+}
+
+async function sendEventAnalysis(
+  response: ServerResponse,
+  options: ApiServerOptions,
+  now: () => Date,
+  eventId: string,
+): Promise<void> {
+  const store = options.eventStore ?? options.replayStore;
+  if (store === undefined) {
+    sendError(response, now(), 'EVENT_NOT_FOUND', `event ${eventId} was not found`, 404);
+    return;
+  }
+  const event = await store.getSourceEvent(eventId);
+  if (event === null) {
+    sendError(response, now(), 'EVENT_NOT_FOUND', `event ${eventId} was not found`, 404);
+    return;
+  }
+  const analyses = await store.listEventAnalyses(eventId);
+  const analysis = analyses.at(-1) ?? null;
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: analysis?.processedAt ?? event.retrievedAt,
+    freshness: unavailableFreshness(
+      'analysis processing time is distinct from source availability',
+    ),
+    data: { event, analysis, status: analysis?.status ?? 'pending' },
+    sourceRefs: [],
+    warnings: analysis === null ? ['Analysis is pending for this source event.'] : [],
   });
 }
 
