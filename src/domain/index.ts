@@ -107,3 +107,27 @@ export type {
   SourceReference,
   TurnoverObservation,
 } from './types.js';
+export { DEFAULT_EXECUTION_CONFIG, ExecutionError, ExecutionService } from './execution.js';
+export type {
+  CreateExecutionIntentInput,
+  CreatedExecutionIntent,
+  ExecutionConfig,
+  ExecutionErrorCode,
+  ExecutionServiceOptions,
+} from './execution.js';
+export type {
+  ConfirmationResult,
+  DemoPositionsResult,
+  ExecutionAuditEvent,
+  ExecutionConfirmation,
+  ExecutionIntent,
+  ExecutionIntentStatus,
+  ExecutionOrder,
+  ExecutionOrderStatus,
+  ExecutionOrderView,
+  ExecutionValidation,
+  ManualPositionInput,
+  Position,
+  PositionSource,
+} from './execution-types.js';
+export type { ExecutionStore } from './execution-store.js';

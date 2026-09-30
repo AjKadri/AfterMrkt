@@ -1,8 +1,12 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { ZodError } from 'zod';
 import { classifyThrownError, ProbeError } from '../lib/errors.js';
+import { BitgetDemoClient, type BitgetDemoRealityAdapter } from '../adapters/bitget/demo.js';
 import type { PublicMarketDataProvider } from '../adapters/bitget/public-market-data.js';
 import {
+  ExecutionConfirmationRequestSchema,
+  ExecutionIntentRequestSchema,
+  ManualPositionRequestSchema,
   ExecutionSimulationRequestSchema,
   ReplaySimulationRequestSchema,
   type ApiEnvelope,
@@ -24,6 +28,9 @@ import {
 import { InMemorySnapshotStore, type MarketSnapshotStore } from '../domain/snapshots.js';
 import type { SourceMetadata, SourceReference } from '../domain/types.js';
 import type { CaptureStore, ReplaySourceReference } from '../persistence/types.js';
+import { ExecutionError, ExecutionService } from '../domain/execution.js';
+import type { ExecutionStore } from '../domain/execution-store.js';
+import { InMemoryExecutionStore } from '../persistence/execution-store.js';
 
 export type ApiServerOptions = {
   marketData: PublicMarketDataProvider;
@@ -32,6 +39,9 @@ export type ApiServerOptions = {
   replayEngine?: ReplayEngine;
   eventReplayEngine?: EventReplayEngine;
   eventStore?: CaptureStore;
+  demo?: BitgetDemoRealityAdapter;
+  executionStore?: ExecutionStore;
+  executionService?: ExecutionService;
   now?: () => Date;
   qualityConfig?: Partial<MarketQualityConfig>;
 };
@@ -49,6 +59,18 @@ export function createApiServer(options: ApiServerOptions): Server {
     options.eventReplayEngine ??
     (options.replayStore === undefined ? null : new EventReplayEngine(options.replayStore));
   const now = options.now ?? (() => new Date());
+  const executionStore = options.executionStore ?? new InMemoryExecutionStore();
+  const demo = options.demo ?? new BitgetDemoClient();
+  const execution =
+    options.executionService ??
+    new ExecutionService({
+      marketData: options.marketData,
+      demo,
+      snapshots,
+      store: executionStore,
+      now,
+      qualityConfig: options.qualityConfig ?? {},
+    });
 
   return createServer((request, response) => {
     void handleRequest(
@@ -58,11 +80,21 @@ export function createApiServer(options: ApiServerOptions): Server {
       snapshots,
       replayEngine,
       eventReplayEngine,
+      execution,
       now,
     ).catch((error: unknown) => {
       const mapped = mapError(error);
       const mode = (request.url ?? '').startsWith('/api/replays') ? 'REPLAY' : 'LIVE';
-      sendError(response, now(), mapped.code, mapped.message, mapped.status, [], mode);
+      sendError(
+        response,
+        now(),
+        mapped.code,
+        mapped.message,
+        mapped.status,
+        [],
+        mode,
+        mapped.details,
+      );
     });
   });
 }
@@ -74,11 +106,73 @@ async function handleRequest(
   snapshots: MarketSnapshotStore,
   replayEngine: ReplayEngine | null,
   eventReplayEngine: EventReplayEngine | null,
+  execution: ExecutionService,
   now: () => Date,
 ): Promise<void> {
   const method = request.method ?? 'GET';
   const parsedUrl = new URL(request.url ?? '/', 'http://localhost');
   const parts = parsedUrl.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+
+  if (method === 'GET' && parsedUrl.pathname === '/api/demo/positions') {
+    await sendDemoPositions(response, execution, now);
+    return;
+  }
+
+  if (method === 'POST' && parsedUrl.pathname === '/api/execution/positions') {
+    await sendManualPosition(response, request, execution, now);
+    return;
+  }
+
+  if (method === 'POST' && parsedUrl.pathname === '/api/execution/intents') {
+    await sendExecutionIntent(response, request, execution, now);
+    return;
+  }
+
+  if (
+    method === 'GET' &&
+    parts.length === 4 &&
+    parts[0] === 'api' &&
+    parts[1] === 'execution' &&
+    parts[2] === 'intents'
+  ) {
+    await sendExecutionIntentView(response, execution, now, parts[3] ?? '');
+    return;
+  }
+
+  if (
+    method === 'POST' &&
+    parts.length === 5 &&
+    parts[0] === 'api' &&
+    parts[1] === 'execution' &&
+    parts[2] === 'intents' &&
+    parts[4] === 'confirm'
+  ) {
+    await sendExecutionConfirmation(response, request, execution, now, parts[3] ?? '');
+    return;
+  }
+
+  if (
+    method === 'GET' &&
+    parts.length === 4 &&
+    parts[0] === 'api' &&
+    parts[1] === 'execution' &&
+    parts[2] === 'orders'
+  ) {
+    await sendExecutionOrderView(response, execution, now, parts[3] ?? '');
+    return;
+  }
+
+  if (
+    method === 'POST' &&
+    parts.length === 5 &&
+    parts[0] === 'api' &&
+    parts[1] === 'execution' &&
+    parts[2] === 'orders' &&
+    parts[4] === 'cancel'
+  ) {
+    await sendExecutionOrderCancellation(response, execution, now, parts[3] ?? '');
+    return;
+  }
 
   if (method === 'GET' && parts.length === 2 && parts[0] === 'api' && parts[1] === 'replays') {
     await sendReplayList(response, replayEngine, now);
@@ -274,6 +368,214 @@ async function sendContext(
     data: session,
     sourceRefs: session.sourceRefs,
     warnings: session.warnings,
+  });
+}
+
+async function sendDemoPositions(
+  response: ServerResponse,
+  execution: ExecutionService,
+  now: () => Date,
+): Promise<void> {
+  const result = await execution.getDemoPositions();
+  const freshness =
+    result.status === 'verified'
+      ? localFreshness(result.checkedAt, 'authenticated BITGET_DEMO account query completed')
+      : unavailableFreshness(result.warnings[0] ?? 'BITGET_DEMO account is unavailable');
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: result.checkedAt,
+    freshness,
+    data: result,
+    sourceRefs: [],
+    warnings: result.warnings,
+  });
+  void now;
+}
+
+async function sendManualPosition(
+  response: ServerResponse,
+  request: IncomingMessage,
+  execution: ExecutionService,
+  now: () => Date,
+): Promise<void> {
+  const payload = await parseRequestBody(response, request, now);
+  if (payload === null) return;
+  const parsed = ManualPositionRequestSchema.safeParse(payload);
+  if (!parsed.success) {
+    sendError(response, now(), 'INVALID_REQUEST', formatZodError(parsed.error), 400);
+    return;
+  }
+  const position = await execution.createManualPosition({
+    providerSymbol: parsed.data.symbol,
+    quantity: parsed.data.quantity,
+    ...(parsed.data.availableQuantity === undefined
+      ? {}
+      : { availableQuantity: parsed.data.availableQuantity }),
+    ...(parsed.data.lockedQuantity === undefined
+      ? {}
+      : { lockedQuantity: parsed.data.lockedQuantity }),
+  });
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: position.asOf,
+    freshness: localFreshness(position.asOf, 'manual position was created locally'),
+    data: { position },
+    sourceRefs: [],
+    warnings: ['Manual positions are simulated and cannot submit a Demo order.'],
+  });
+}
+
+async function sendExecutionIntent(
+  response: ServerResponse,
+  request: IncomingMessage,
+  execution: ExecutionService,
+  now: () => Date,
+): Promise<void> {
+  const payload = await parseRequestBody(response, request, now);
+  if (payload === null) return;
+  const parsed = ExecutionIntentRequestSchema.safeParse(payload);
+  if (!parsed.success) {
+    sendError(response, now(), 'INVALID_REQUEST', formatZodError(parsed.error), 400);
+    return;
+  }
+  const created = await execution.createIntent({
+    positionId: parsed.data.positionId,
+    providerSymbol: parsed.data.symbol,
+    orderType: parsed.data.orderType,
+    requestedQuantity: parsed.data.requestedQuantity,
+    ...(parsed.data.limitPrice === undefined ? {} : { limitPrice: parsed.data.limitPrice }),
+    ...(parsed.data.maximumAcceptableSlippageBps === undefined
+      ? {}
+      : { maximumAcceptableSlippageBps: parsed.data.maximumAcceptableSlippageBps }),
+  });
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: created.intent.createdAt,
+    freshness: created.intent.simulation.freshness,
+    data: created,
+    sourceRefs: [
+      toSourceReference(
+        created.intent.bookSource,
+        created.intent.providerSymbol,
+        created.intent.bookSnapshotId,
+      ),
+    ],
+    warnings: executionWarnings(created.intent.simulation),
+  });
+}
+
+async function sendExecutionIntentView(
+  response: ServerResponse,
+  execution: ExecutionService,
+  now: () => Date,
+  intentId: string,
+): Promise<void> {
+  const intent = await execution.getIntent(intentId);
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: intent.createdAt,
+    freshness: intent.simulation.freshness,
+    data: { intent },
+    sourceRefs: [
+      toSourceReference(intent.bookSource, intent.providerSymbol, intent.bookSnapshotId),
+    ],
+    warnings: executionWarnings(intent.simulation),
+  });
+  void now;
+}
+
+async function sendExecutionConfirmation(
+  response: ServerResponse,
+  request: IncomingMessage,
+  execution: ExecutionService,
+  now: () => Date,
+  intentId: string,
+): Promise<void> {
+  const payload = await parseRequestBody(response, request, now);
+  if (payload === null) return;
+  const parsed = ExecutionConfirmationRequestSchema.safeParse(payload);
+  if (!parsed.success) {
+    sendError(response, now(), 'INVALID_REQUEST', formatZodError(parsed.error), 400);
+    return;
+  }
+  const result = await execution.confirmIntent(intentId, parsed.data.confirmationToken);
+  const freshness =
+    result.status === 'refresh_required'
+      ? result.simulation.freshness
+      : orderFreshness(result.order.provider?.receivedAt ?? null, now());
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: result.status === 'refresh_required' ? result.intent.createdAt : result.order.updatedAt,
+    freshness,
+    data: result,
+    sourceRefs: [
+      toSourceReference(
+        result.intent.bookSource,
+        result.intent.providerSymbol,
+        result.intent.bookSnapshotId,
+      ),
+    ],
+    warnings:
+      result.status === 'refresh_required'
+        ? executionWarnings(result.simulation)
+        : [
+            'BITGET_DEMO provider acknowledgement is not a fill; order state is reconciled separately.',
+          ],
+  });
+}
+
+async function sendExecutionOrderView(
+  response: ServerResponse,
+  execution: ExecutionService,
+  now: () => Date,
+  orderId: string,
+): Promise<void> {
+  const result = await execution.getOrder(orderId);
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: result.order.updatedAt,
+    freshness: orderFreshness(result.order.provider?.receivedAt ?? null, now()),
+    data: result,
+    sourceRefs:
+      result.intent === null
+        ? []
+        : [
+            toSourceReference(
+              result.intent.bookSource,
+              result.intent.providerSymbol,
+              result.intent.bookSnapshotId,
+            ),
+          ],
+    warnings: ['Order state is provider-reconciled.'],
+  });
+}
+
+async function sendExecutionOrderCancellation(
+  response: ServerResponse,
+  execution: ExecutionService,
+  now: () => Date,
+  orderId: string,
+): Promise<void> {
+  const result = await execution.cancelOrder(orderId);
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: result.order.updatedAt,
+    freshness: orderFreshness(result.order.provider?.receivedAt ?? null, now()),
+    data: result,
+    sourceRefs:
+      result.intent === null
+        ? []
+        : [
+            toSourceReference(
+              result.intent.bookSource,
+              result.intent.providerSymbol,
+              result.intent.bookSnapshotId,
+            ),
+          ],
+    warnings:
+      result.order.status === 'canceled'
+        ? []
+        : ['Cancellation was requested but the final provider state is not yet verified.'],
   });
 }
 
@@ -665,6 +967,19 @@ async function sendReplaySimulation(
   });
 }
 
+async function parseRequestBody(
+  response: ServerResponse,
+  request: IncomingMessage,
+  now: () => Date,
+): Promise<unknown | null> {
+  try {
+    return JSON.parse(await readBody(request)) as unknown;
+  } catch {
+    sendError(response, now(), 'INVALID_REQUEST', 'request body must be valid JSON', 400);
+    return null;
+  }
+}
+
 function sendEnvelope<T>(response: ServerResponse, envelope: ApiEnvelope<T>): void {
   sendJson(response, 200, envelope);
 }
@@ -677,6 +992,7 @@ function sendError(
   status: number,
   sourceRefs: SourceReference[] = [],
   mode: 'LIVE' | 'REPLAY' = 'LIVE',
+  details: Record<string, string | number | boolean | null> = {},
 ): void {
   const envelope: ApiErrorEnvelope = {
     mode,
@@ -693,7 +1009,7 @@ function sendError(
     data: null,
     sourceRefs,
     warnings: [message],
-    error: { code, message },
+    error: { code, message, ...(Object.keys(details).length === 0 ? {} : { details }) },
   };
   sendJson(response, status, envelope);
 }
@@ -758,6 +1074,48 @@ function contextFreshness(context: AfterMrktContext) {
   return context.liquidityContext.metrics?.freshness ?? context.market.freshness;
 }
 
+function localFreshness(receivedAt: string, reason: string) {
+  return {
+    state: 'fresh' as const,
+    reason,
+    ageMs: 0,
+    clockSkewMs: 0,
+    timestampConflict: false,
+    providerTimestamp: receivedAt,
+    receivedAt,
+  };
+}
+
+function orderFreshness(receivedAt: string | null, now: Date) {
+  if (receivedAt === null)
+    return unavailableFreshness('provider order state has no receipt timestamp');
+  const receivedMs = Date.parse(receivedAt);
+  if (!Number.isFinite(receivedMs))
+    return unavailableFreshness('provider order receipt timestamp is invalid');
+  const ageMs = Math.max(0, now.getTime() - receivedMs);
+  return {
+    state: ageMs <= DEFAULT_FRESHNESS_WINDOW_MS ? ('fresh' as const) : ('stale' as const),
+    reason: 'provider order state was queried by clientOid',
+    ageMs,
+    clockSkewMs: null,
+    timestampConflict: false,
+    providerTimestamp: null,
+    receivedAt,
+  };
+}
+
+function executionWarnings(simulation: {
+  condition: { label: string; reasons: unknown[] };
+}): string[] {
+  return simulation.condition.label === 'execution-normal'
+    ? []
+    : [
+        `Execution condition is ${simulation.condition.label}. Review the deterministic reasons before confirming.`,
+      ];
+}
+
+const DEFAULT_FRESHNESS_WINDOW_MS = 30_000;
+
 async function safeProviderCall<T>(call: () => Promise<T>): Promise<T | null> {
   try {
     return await call();
@@ -796,7 +1154,16 @@ function mapError(error: unknown): {
   code: ApiErrorCode;
   message: string;
   status: number;
+  details?: Record<string, string | number | boolean | null>;
 } {
+  if (error instanceof ExecutionError) {
+    return {
+      code: error.code,
+      message: error.message,
+      status: executionErrorStatus(error.code),
+      ...(Object.keys(error.details).length === 0 ? {} : { details: error.details }),
+    };
+  }
   if (error instanceof ReplayError) {
     if (error.code === 'replay_case_not_found') {
       return { code: 'REPLAY_CASE_NOT_FOUND', message: error.message, status: 404 };
@@ -830,6 +1197,32 @@ function mapError(error: unknown): {
         status: 500,
       };
   }
+}
+
+function executionErrorStatus(code: ExecutionError['code']): number {
+  if (
+    code === 'POSITION_NOT_FOUND' ||
+    code === 'INSTRUMENT_NOT_FOUND' ||
+    code === 'INTENT_NOT_FOUND' ||
+    code === 'ORDER_NOT_FOUND'
+  ) {
+    return 404;
+  }
+  if (code === 'DEMO_UNAVAILABLE' || code === 'DEMO_UNSUPPORTED' || code === 'PROVIDER_UNAVAILABLE')
+    return 503;
+  if (code === 'PROVIDER_REJECTED') return 502;
+  if (
+    code === 'REFRESH_REQUIRED' ||
+    code === 'CONFIRMATION_REUSED' ||
+    code === 'CONFIRMATION_EXPIRED' ||
+    code === 'CONFIRMATION_INVALID' ||
+    code === 'INTENT_EXPIRED' ||
+    code === 'OPEN_SELL_ORDER' ||
+    code === 'ORDER_NOT_CANCELABLE'
+  ) {
+    return 409;
+  }
+  return 400;
 }
 
 function createDefaultSnapshotStore(): InMemorySnapshotStore {

@@ -29,3 +29,4 @@ export type {
   ReplaySourceReference,
 } from './types.js';
 export type { EventAnalysis, SourceEvent } from '../contracts/events.js';
+export { FileExecutionStore, InMemoryExecutionStore } from './execution-store.js';

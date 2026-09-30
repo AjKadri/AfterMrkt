@@ -134,6 +134,69 @@ describe('AfterMrkt API contracts', () => {
     }
   });
 
+  it('exposes manual positions and requires Demo-only confirmation for external execution', async () => {
+    const server = createApiServer({ marketData: testProvider(), now: () => NOW });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('test server did not expose a port');
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    try {
+      const positionResponse = await fetch(`${baseUrl}/api/execution/positions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ symbol: 'RMUUSDT', quantity: '5' }),
+      });
+      expect(positionResponse.status).toBe(200);
+      const positionBody = (await positionResponse.json()) as {
+        data: { position: { positionId: string; environment: string; isSimulated: boolean } };
+      };
+      expect(positionBody.data.position.positionId).toMatch(/^[a-f0-9]{64}$/);
+      expect(positionBody.data.position.environment).toBe('SIMULATED');
+      expect(positionBody.data.position.isSimulated).toBe(true);
+
+      const intentResponse = await fetch(`${baseUrl}/api/execution/intents`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          positionId: positionBody.data.position.positionId,
+          symbol: 'RMUUSDT',
+          orderType: 'market',
+          requestedQuantity: '5',
+        }),
+      });
+      expect(intentResponse.status).toBe(200);
+      const intentBody = (await intentResponse.json()) as {
+        data: { intent: { intentId: string; environment: string }; confirmationToken: string };
+        sourceRefs: Array<{ snapshotId: string | null; providerSymbol: string | null }>;
+      };
+      expect(intentBody.data.intent.environment).toBe('SIMULATED');
+      expect(intentBody.data.confirmationToken.length).toBeGreaterThan(20);
+      expect(intentBody.sourceRefs).toHaveLength(1);
+      expect(intentBody.sourceRefs[0]).toMatchObject({
+        snapshotId: expect.any(String),
+        providerSymbol: 'RMUUSDT',
+      });
+
+      const blockedResponse = await fetch(
+        `${baseUrl}/api/execution/intents/${intentBody.data.intent.intentId}/confirm`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ confirmationToken: intentBody.data.confirmationToken }),
+        },
+      );
+      expect(blockedResponse.status).toBe(400);
+      expect((await blockedResponse.json()) as { error: { code: string } }).toMatchObject({
+        error: { code: 'MANUAL_POSITION_NOT_EXECUTABLE' },
+      });
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
+
   it('exposes persisted source events and pending analysis without invoking Qwen', async () => {
     const eventStore = new InMemoryCaptureStore();
     const event = testEvent();

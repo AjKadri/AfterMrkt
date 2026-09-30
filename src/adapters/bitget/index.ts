@@ -6,12 +6,21 @@ export {
   type CandleQuery,
   type PublicMarketDataProvider,
 } from './public-market-data.js';
-export { demoRealityAdapterBoundary } from './demo.js';
+export {
+  BitgetDemoClient,
+  buildBitgetSignature,
+  credentialsFromProcessEnv,
+  demoRealityAdapterBoundary,
+} from './demo.js';
 export type {
+  BitgetDemoClientOptions,
   BitgetDemoCredentials,
   BitgetDemoRealityAdapter,
+  DemoAccountCheck,
+  DemoAssetBalance,
   DemoCapabilityResult,
-  DemoLimitOrderIntent,
+  DemoOpenOrder,
+  DemoOrderIntent,
   DemoOrderState,
 } from './demo.js';
 export {
