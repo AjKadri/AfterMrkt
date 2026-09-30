@@ -71,6 +71,13 @@ describe('deterministic market-quality engine', () => {
     expect(result.condition.label).toBe('execution-unavailable');
   });
 
+  it('reports a one-sided book as unavailable instead of calculating a midpoint', () => {
+    const result = calculateMarketMetrics(testSnapshot({ asks: [] }), NOW);
+    expect(result.valid).toBe(false);
+    expect(result.midpoint).toBeNull();
+    expect(result.condition.label).toBe('execution-unavailable');
+  });
+
   it('handles a requested quantity much larger than observed depth', () => {
     const result = simulateExit({
       providerSymbol: 'RMUUSDT',

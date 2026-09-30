@@ -4,9 +4,22 @@ import {
   normalizeInstruments,
   normalizeOrderBook,
   normalizeTicker,
+  normalizeTickerData,
   parseBitgetResponse,
 } from '../src/adapters/bitget/index.js';
 import { ProbeError } from '../src/lib/errors.js';
+import type { SourceMetadata } from '../src/domain/types.js';
+
+const TICKER_SOURCE: SourceMetadata = {
+  provider: 'bitget',
+  sourceId: 'bitget_generic_spot_ticker',
+  sourceType: 'generic-public',
+  endpoint: 'https://example.test/api/v3/market/tickers',
+  providerTimestamp: '1770000000000',
+  receivedAt: '2026-02-02T00:00:00.000Z',
+  rawResponseHash: 'b'.repeat(64),
+  httpStatus: 200,
+};
 
 describe('Bitget provider contracts', () => {
   it('normalizes a successful instrument response while preserving the exact symbol', () => {
@@ -100,5 +113,22 @@ describe('Bitget provider contracts', () => {
         'RMUUSDT',
       ),
     ).toThrowError(/symbol mismatch/);
+  });
+
+  it('keeps turnover fields separate and marks their semantics as unverified', () => {
+    const result = normalizeTickerData(
+      {
+        symbol: 'RMUUSDT',
+        lastPr: '100',
+        turnover24h: '1200.50',
+        platformTurnover24h: '900.25',
+      },
+      TICKER_SOURCE,
+    );
+    expect(result.turnover24h).toBe('1200.50');
+    expect(result.platformTurnover24h).toBe('900.25');
+    expect(result.quoteVolume).toBeNull();
+    expect(result.turnoverObservations.turnover24h.units).toBe('unknown');
+    expect(result.turnoverObservations.platformTurnover24h.safeForClassification).toBe(false);
   });
 });

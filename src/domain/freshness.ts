@@ -7,7 +7,11 @@ export const DEFAULT_FRESHNESS_CONFIG = Object.freeze({
   futureToleranceMs: 5_000,
 });
 
-export type FreshnessConfig = typeof DEFAULT_FRESHNESS_CONFIG;
+export type FreshnessConfig = {
+  freshMaxAgeMs: number;
+  staleMaxAgeMs: number;
+  futureToleranceMs: number;
+};
 
 export function assessFreshness(
   providerTimestamp: string | null,
@@ -24,6 +28,8 @@ export function assessFreshness(
       state: 'unavailable',
       reason: 'received timestamp is missing or invalid',
       ageMs: null,
+      clockSkewMs: null,
+      timestampConflict: false,
       providerTimestamp,
       receivedAt,
     };
@@ -33,17 +39,23 @@ export function assessFreshness(
       state: 'unavailable',
       reason: 'provider timestamp is missing or invalid',
       ageMs: null,
+      clockSkewMs: null,
+      timestampConflict: false,
       providerTimestamp,
       receivedAt,
     };
   }
 
-  const ageMs = nowMs - providerMs;
-  if (ageMs < -config.futureToleranceMs) {
+  const rawAgeMs = nowMs - providerMs;
+  const ageMs = Math.max(0, rawAgeMs);
+  const clockSkewMs = receivedMs - providerMs;
+  if (rawAgeMs < -config.futureToleranceMs || clockSkewMs < -config.futureToleranceMs) {
     return {
       state: 'unavailable',
-      reason: 'provider timestamp is too far in the future',
+      reason: 'provider timestamp conflicts with local evaluation or receipt time',
       ageMs,
+      clockSkewMs,
+      timestampConflict: true,
       providerTimestamp,
       receivedAt,
     };
@@ -53,6 +65,8 @@ export function assessFreshness(
       state: 'fresh',
       reason: 'provider timestamp is within the provisional fresh window',
       ageMs,
+      clockSkewMs,
+      timestampConflict: false,
       providerTimestamp,
       receivedAt,
     };
@@ -62,6 +76,8 @@ export function assessFreshness(
       state: 'stale',
       reason: 'provider timestamp exceeds the provisional fresh window',
       ageMs,
+      clockSkewMs,
+      timestampConflict: false,
       providerTimestamp,
       receivedAt,
     };
@@ -70,6 +86,8 @@ export function assessFreshness(
     state: 'unavailable',
     reason: 'provider timestamp exceeds the provisional stale window',
     ageMs,
+    clockSkewMs,
+    timestampConflict: false,
     providerTimestamp,
     receivedAt,
   };

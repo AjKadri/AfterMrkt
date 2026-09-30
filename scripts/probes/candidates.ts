@@ -28,7 +28,12 @@ const ranked = mappedOnline
     (item): item is typeof item & { ticker: NonNullable<typeof item.ticker> } =>
       item.ticker !== undefined,
   )
-  .sort((left, right) => compareTurnover(left.ticker.quoteVolume, right.ticker.quoteVolume));
+  .sort((left, right) =>
+    compareTurnover(
+      turnoverForInformationalOrdering(left.ticker),
+      turnoverForInformationalOrdering(right.ticker),
+    ),
+  );
 
 const candidates: CandidateReport[] = [];
 for (const item of ranked.slice(0, Math.max(candidateLimit * 4, 20))) {
@@ -59,13 +64,24 @@ for (const item of ranked.slice(0, Math.max(candidateLimit * 4, 20))) {
       bid: metrics.bestBid,
       ask: metrics.bestAsk,
       spreadBps: metrics.spreadBps,
-      bidLevels: metrics.depth.bestBid.levels,
-      askLevels: countLevels(snapshot.asks),
-      turnover24h: item.ticker.quoteVolume,
+      bidLevels: snapshot.returnedBidCount,
+      askLevels: snapshot.returnedAskCount,
+      turnover24h: item.ticker.turnover24h,
+      platformTurnover24h: item.ticker.platformTurnover24h,
       recentTradeCount,
       mappingStatus: item.instrument.mappingStatus,
       timestamp: orderBook.source.providerTimestamp ?? orderBook.source.receivedAt,
-      sourceRefs: [orderBook.source.endpoint],
+      sourceRefs: [
+        {
+          sourceId: orderBook.source.sourceId,
+          sourceType: orderBook.source.sourceType,
+          endpoint: orderBook.source.endpoint,
+          providerTimestamp: orderBook.source.providerTimestamp,
+          receivedAt: orderBook.source.receivedAt,
+          rawResponseHash: orderBook.source.rawResponseHash,
+        },
+      ],
+      turnoverSemantics: item.ticker.turnoverObservations,
     });
   } catch {
     // A candidate is only reported after a valid live book is available.
@@ -77,6 +93,7 @@ const report = {
   generatedAt: new Date().toISOString(),
   provider: 'bitget',
   source: 'generic-public-market-data',
+  turnoverUse: 'informational-ordering-only-unverified-semantics',
   permanentDemoSelection: null,
   discoveredRealityCount: universe.data.length,
   mappedOnlineCount: mappedOnline.length,
@@ -99,13 +116,30 @@ type CandidateReport = {
   recentTradeCount: number | null;
   mappingStatus: string;
   timestamp: string;
-  sourceRefs: string[];
+  sourceRefs: Array<{
+    sourceId: string;
+    sourceType: string;
+    endpoint: string;
+    providerTimestamp: string | null;
+    receivedAt: string;
+    rawResponseHash: string;
+  }>;
+  platformTurnover24h: string | null;
+  turnoverSemantics: unknown;
 };
 
 function compareTurnover(left: string | null, right: string | null): number {
   const leftValue = decimalOrZero(left);
   const rightValue = decimalOrZero(right);
   return rightValue.comparedTo(leftValue);
+}
+
+function turnoverForInformationalOrdering(ticker: {
+  turnover24h: string | null;
+  platformTurnover24h: string | null;
+  quoteVolume: string | null;
+}): string | null {
+  return ticker.turnover24h ?? ticker.platformTurnover24h ?? ticker.quoteVolume;
 }
 
 function decimalOrZero(value: string | null): Decimal {
@@ -118,8 +152,4 @@ function decimalOrZero(value: string | null): Decimal {
   } catch {
     return new Decimal(0);
   }
-}
-
-function countLevels(levels: unknown[]): number {
-  return levels.length;
 }

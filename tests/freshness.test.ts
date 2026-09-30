@@ -14,4 +14,21 @@ describe('market freshness', () => {
     expect(assessFreshness(null, NOW.toISOString(), NOW).state).toBe('unavailable');
     expect(assessFreshness('not-a-timestamp', NOW.toISOString(), NOW).state).toBe('unavailable');
   });
+
+  it('keeps user-facing age non-negative while preserving signed clock skew', () => {
+    const freshness = assessFreshness('1790719202000', NOW.toISOString(), NOW);
+    expect(freshness.state).toBe('fresh');
+    expect(freshness.ageMs).toBe(0);
+    expect(freshness.clockSkewMs).toBe(-2_000);
+    expect(freshness.timestampConflict).toBe(false);
+  });
+
+  it('rejects provider timestamps beyond the documented future tolerance', () => {
+    const freshness = assessFreshness('1790719206000', NOW.toISOString(), NOW);
+    expect(freshness.state).toBe('unavailable');
+    expect(freshness.ageMs).toBe(0);
+    expect(freshness.clockSkewMs).toBe(-6_000);
+    expect(freshness.timestampConflict).toBe(true);
+    expect(freshness.reason).toContain('conflicts');
+  });
 });

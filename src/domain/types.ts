@@ -6,6 +6,8 @@ export const DecimalStringSchema = z
 
 export const SourceMetadataSchema = z.object({
   provider: z.literal('bitget'),
+  sourceId: z.string().min(1),
+  sourceType: z.enum(['generic-public', 'reality-public', 'mixed-public']),
   endpoint: z.string().url(),
   providerTimestamp: z.string().nullable(),
   receivedAt: z.string().datetime(),
@@ -14,6 +16,17 @@ export const SourceMetadataSchema = z.object({
 });
 
 export type SourceMetadata = z.infer<typeof SourceMetadataSchema>;
+
+export type TurnoverObservation = {
+  value: string | null;
+  providerField: 'turnover24h' | 'platformTurnover24h';
+  units: 'unknown';
+  sourceId: string;
+  endpoint: string;
+  safeForRanking: false;
+  safeForClassification: false;
+  note: string;
+};
 
 export type ProviderRecord<T> = {
   data: T;
@@ -47,6 +60,7 @@ export type NormalizedRealityInstrument = {
   providerTimestamp: string | null;
   receivedAt: string;
   source: SourceMetadata;
+  mappingSource: SourceMetadata | null;
 };
 
 export type NormalizedTicker = {
@@ -57,7 +71,15 @@ export type NormalizedTicker = {
   askPrice: string | null;
   askSize: string | null;
   baseVolume: string | null;
+  volume24h: string | null;
   quoteVolume: string | null;
+  usdtVolume: string | null;
+  turnover24h: string | null;
+  platformTurnover24h: string | null;
+  turnoverObservations: {
+    turnover24h: TurnoverObservation;
+    platformTurnover24h: TurnoverObservation;
+  };
   providerTimestamp: string | null;
   receivedAt: string;
   source: SourceMetadata;
@@ -93,6 +115,9 @@ export type OrderBookSnapshot = {
   providerSymbol: string;
   bids: OrderBookLevel[];
   asks: OrderBookLevel[];
+  requestedDepth: number;
+  returnedBidCount: number;
+  returnedAskCount: number;
   providerTimestamp: string | null;
   receivedAt: string;
   source: SourceMetadata;
@@ -106,12 +131,18 @@ export type Freshness = {
   state: MarketFreshnessState;
   reason: string;
   ageMs: number | null;
+  clockSkewMs: number | null;
+  timestampConflict: boolean;
   providerTimestamp: string | null;
   receivedAt: string | null;
 };
 
 export type SourceReference = {
   provider: 'bitget';
+  sourceId: string;
+  sourceType: SourceMetadata['sourceType'];
+  providerSymbol: string | null;
+  snapshotId: string | null;
   endpoint: string;
   rawResponseHash: string;
   providerTimestamp: string | null;

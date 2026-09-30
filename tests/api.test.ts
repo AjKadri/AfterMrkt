@@ -4,7 +4,9 @@ import { createApiServer } from '../src/api/index.js';
 import type { PublicMarketDataProvider } from '../src/adapters/bitget/index.js';
 import type { ProviderRecord, NormalizedOrderBook } from '../src/domain/types.js';
 import { InMemorySnapshotStore } from '../src/domain/snapshots.js';
-import { TEST_FIXTURE_SOURCE, testSnapshot } from './fixtures/market.js';
+import { createReplayCase } from '../src/domain/replay.js';
+import { InMemoryCaptureStore } from '../src/persistence/store.js';
+import { TEST_FIXTURE_SOURCE, testMarketSnapshotInput, testSnapshot } from './fixtures/market.js';
 
 const NOW = new Date('2026-09-29T22:00:00.000Z');
 
@@ -110,6 +112,70 @@ describe('AfterMrkt API contracts', () => {
       await once(server, 'close');
     }
   });
+
+  it('serves replay metadata and simulations without invoking the provider', async () => {
+    const captureStore = new InMemoryCaptureStore();
+    const marketSnapshot = await captureStore.saveMarketSnapshot(testMarketSnapshotInput());
+    const orderBookSnapshot = await captureStore.saveOrderBook(testSnapshot());
+    const replayCase = await captureStore.saveReplayCase(
+      createReplayCase({
+        providerSymbol: 'RMUUSDT',
+        nativeTicker: 'MU',
+        replayAsOf: NOW.toISOString(),
+        marketSnapshot,
+        orderBookSnapshot,
+        marketStateSnapshot: null,
+        manifestCreatedAt: '2026-09-30T00:00:00.000Z',
+      }),
+    );
+    const provider = testProvider();
+    const failIfCalled = async (): Promise<never> => {
+      throw new Error('provider must not be called by replay routes');
+    };
+    provider.discoverRealityInstruments = failIfCalled;
+    provider.getTicker = failIfCalled;
+    provider.getOrderBook = failIfCalled;
+    const server = createApiServer({
+      marketData: provider,
+      replayStore: captureStore,
+      now: () => NOW,
+    });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('test server did not expose a port');
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    try {
+      const listResponse = await fetch(`${baseUrl}/api/replays`);
+      expect(listResponse.status).toBe(200);
+      expect((await listResponse.json()) as { mode: string }).toMatchObject({ mode: 'REPLAY' });
+      const caseResponse = await fetch(`${baseUrl}/api/replays/${replayCase.manifest.caseId}`);
+      expect(caseResponse.status).toBe(200);
+      const caseBody = (await caseResponse.json()) as {
+        data: { manifest: { manifestHash: string } };
+      };
+      expect(caseBody.data.manifest.manifestHash).toMatch(/^[a-f0-9]{64}$/);
+      const simulationResponse = await fetch(
+        `${baseUrl}/api/replays/${replayCase.manifest.caseId}/simulations`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestedQuantity: '5' }),
+        },
+      );
+      expect(simulationResponse.status).toBe(200);
+      const simulationBody = (await simulationResponse.json()) as {
+        mode: string;
+        data: { data: { simulation: { filledQuantity: string } } };
+      };
+      expect(simulationBody.mode).toBe('REPLAY');
+      expect(simulationBody.data.data.simulation.filledQuantity).toBe('5');
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
 });
 
 async function listen(server: ReturnType<typeof createApiServer>): Promise<void> {
@@ -125,6 +191,9 @@ function testProvider(): PublicMarketDataProvider {
       providerSymbol: snapshot.providerSymbol,
       bids: snapshot.bids,
       asks: snapshot.asks,
+      requestedDepth: snapshot.requestedDepth,
+      returnedBidCount: snapshot.returnedBidCount,
+      returnedAskCount: snapshot.returnedAskCount,
       providerTimestamp: snapshot.providerTimestamp,
       receivedAt: snapshot.receivedAt,
       source: TEST_FIXTURE_SOURCE,
@@ -155,6 +224,7 @@ function testProvider(): PublicMarketDataProvider {
     providerTimestamp: TEST_FIXTURE_SOURCE.providerTimestamp,
     receivedAt: TEST_FIXTURE_SOURCE.receivedAt,
     source: TEST_FIXTURE_SOURCE,
+    mappingSource: TEST_FIXTURE_SOURCE,
   };
   const ticker = {
     providerSymbol: 'RMUUSDT',
@@ -164,7 +234,33 @@ function testProvider(): PublicMarketDataProvider {
     askPrice: '101',
     askSize: '10',
     baseVolume: '10',
+    volume24h: '10',
     quoteVolume: '1005',
+    usdtVolume: null,
+    turnover24h: null,
+    platformTurnover24h: null,
+    turnoverObservations: {
+      turnover24h: {
+        value: null,
+        providerField: 'turnover24h' as const,
+        units: 'unknown' as const,
+        sourceId: TEST_FIXTURE_SOURCE.sourceId,
+        endpoint: TEST_FIXTURE_SOURCE.endpoint,
+        safeForRanking: false as const,
+        safeForClassification: false as const,
+        note: 'test fixture',
+      },
+      platformTurnover24h: {
+        value: null,
+        providerField: 'platformTurnover24h' as const,
+        units: 'unknown' as const,
+        sourceId: TEST_FIXTURE_SOURCE.sourceId,
+        endpoint: TEST_FIXTURE_SOURCE.endpoint,
+        safeForRanking: false as const,
+        safeForClassification: false as const,
+        note: 'test fixture',
+      },
+    },
     providerTimestamp: TEST_FIXTURE_SOURCE.providerTimestamp,
     receivedAt: TEST_FIXTURE_SOURCE.receivedAt,
     source: TEST_FIXTURE_SOURCE,
@@ -178,6 +274,7 @@ function testProvider(): PublicMarketDataProvider {
     getCandles: async () => ({ source: TEST_FIXTURE_SOURCE, data: [] }),
     getHistoricalCandles: async () => ({ source: TEST_FIXTURE_SOURCE, data: [] }),
     getStockInfo: async () => ({ source: TEST_FIXTURE_SOURCE, data: [] }),
+    getCompanyOverview: async () => ({ source: TEST_FIXTURE_SOURCE, data: [] }),
     getMarketStates: async () => ({ source: TEST_FIXTURE_SOURCE, data: [] }),
     getMarketCalendar: async () => ({
       source: TEST_FIXTURE_SOURCE,

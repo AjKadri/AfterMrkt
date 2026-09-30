@@ -38,4 +38,4 @@ Practical behavior for that principle:
 
 ## Phase boundary
 
-The current phase is the read-only Bitget public market-data foundation and deterministic execution-quality engine. It includes normalized Reality instruments, public market snapshots, exact-decimal depth and exit simulation, backend contracts, and candidate reports. It does not include UI screens, wallets, live account connections, live trading, order submission, event/news ingestion, Qwen event reasoning, or historical replay.
+The current phase is the read-only Bitget public market-data, capture, and deterministic replay foundation. It includes normalized Reality instruments, immutable public market and order-book snapshots, exact-decimal depth and exit simulation, bounded collection, provisional baseline structures, replay manifests and APIs, backend contracts, and candidate diagnostics. It does not include UI screens, wallets, live account connections, live trading, order submission, autonomous execution, event/news ingestion, Qwen event reasoning, or outcome-based historical analysis.

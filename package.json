@@ -13,10 +13,14 @@
     "dev:server": "tsx scripts/server.ts",
     "probe:bitget": "tsx scripts/probes/bitget.ts",
     "probe:candidates": "tsx scripts/probes/candidates.ts",
+    "probe:capture": "tsx scripts/probes/capture.ts",
+    "probe:diagnostics": "tsx scripts/probes/diagnostics.ts",
     "probe:live-simulation": "tsx scripts/probes/live-simulation.ts",
     "probe:mcp": "tsx scripts/probes/mcp.ts",
     "probe:mcp-transport": "tsx scripts/probes/mcp-transport.ts",
-    "probe:qwen": "tsx scripts/probes/qwen.ts"
+    "probe:orderbook-asymmetry": "tsx scripts/probes/orderbook-asymmetry.ts",
+    "probe:qwen": "tsx scripts/probes/qwen.ts",
+    "probe:replay": "tsx scripts/probes/replay.ts"
   },
   "dependencies": {
     "decimal.js": "^10.6.0",

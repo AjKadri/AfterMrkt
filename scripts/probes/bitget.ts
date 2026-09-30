@@ -3,6 +3,7 @@ import {
   getProviderTimestamp,
   normalizeCalendar,
   normalizeCandles,
+  normalizeCompanyOverview,
   normalizeFills,
   normalizeInstruments,
   normalizeMarketStates,
@@ -173,6 +174,35 @@ if (comparisonSymbol) {
           }),
         ),
       normalize: normalizeCandles,
+      outputDirectory: evidenceDirectory,
+    }),
+  );
+  runs.push(
+    await executeProbe({
+      capability: `bitget.reality.company-overview.${comparisonSymbol}`,
+      request: {
+        method: 'GET',
+        url: buildUrl('/api/v3/reality/market/company-overview', { symbol: comparisonSymbol }),
+      },
+      action: async () =>
+        toCapture(
+          await client.get('/api/v3/reality/market/company-overview', {
+            symbol: comparisonSymbol,
+          }),
+        ),
+      normalize: (payload) => normalizeCompanyOverview(payload),
+      outputDirectory: evidenceDirectory,
+    }),
+  );
+  runs.push(
+    await executeProbe({
+      capability: 'bitget.reality.company-overview.all',
+      request: {
+        method: 'GET',
+        url: buildUrl('/api/v3/reality/market/company-overview', {}),
+      },
+      action: async () => toCapture(await client.get('/api/v3/reality/market/company-overview')),
+      normalize: (payload) => normalizeCompanyOverview(payload),
       outputDirectory: evidenceDirectory,
     }),
   );

@@ -18,7 +18,20 @@ export type {
   SimulationInput,
 } from './market-quality.js';
 export { InMemorySnapshotStore } from './snapshots.js';
+export { orderBookSnapshotId } from './snapshots.js';
 export type { MarketSnapshotStore } from './snapshots.js';
+export {
+  DEFAULT_BASELINE_CONFIG,
+  deriveHistoricalBaseline,
+  observationFromMarket,
+} from './baselines.js';
+export { createReplayCase, ReplayEngine, ReplayError } from './replay.js';
+export type { BaselineConfig, HistoricalObservation } from './baselines.js';
+export type {
+  ReplayManifestInput,
+  ReplaySimulationInput,
+  ReplaySimulationResult,
+} from './replay.js';
 export type {
   Freshness,
   NormalizedCandle,
@@ -31,4 +44,5 @@ export type {
   ProviderRecord,
   SourceMetadata,
   SourceReference,
+  TurnoverObservation,
 } from './types.js';

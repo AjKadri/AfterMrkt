@@ -4,12 +4,14 @@ import { classifyThrownError, ProbeError } from '../lib/errors.js';
 import type { PublicMarketDataProvider } from '../adapters/bitget/public-market-data.js';
 import {
   ExecutionSimulationRequestSchema,
+  ReplaySimulationRequestSchema,
   type ApiEnvelope,
   type ApiErrorCode,
   type ApiErrorEnvelope,
   type ExecutionSimulationRequest,
 } from '../contracts/api.js';
 import { freshnessFromSource } from '../domain/freshness.js';
+import { ReplayEngine, ReplayError } from '../domain/replay.js';
 import {
   calculateMarketMetrics,
   resolveMarketQualityConfig,
@@ -18,10 +20,13 @@ import {
 } from '../domain/market-quality.js';
 import { InMemorySnapshotStore, type MarketSnapshotStore } from '../domain/snapshots.js';
 import type { SourceMetadata, SourceReference } from '../domain/types.js';
+import type { CaptureStore, ReplaySourceReference } from '../persistence/types.js';
 
 export type ApiServerOptions = {
   marketData: PublicMarketDataProvider;
   snapshots?: MarketSnapshotStore;
+  replayStore?: CaptureStore;
+  replayEngine?: ReplayEngine;
   now?: () => Date;
   qualityConfig?: Partial<MarketQualityConfig>;
 };
@@ -30,13 +35,21 @@ const MAX_BODY_BYTES = 128 * 1024;
 
 export function createApiServer(options: ApiServerOptions): Server {
   const snapshots = options.snapshots ?? createDefaultSnapshotStore();
+  const replayEngine =
+    options.replayEngine ??
+    (options.replayStore === undefined
+      ? null
+      : new ReplayEngine(options.replayStore, options.qualityConfig));
   const now = options.now ?? (() => new Date());
 
   return createServer((request, response) => {
-    void handleRequest(request, response, options, snapshots, now).catch((error: unknown) => {
-      const mapped = mapError(error);
-      sendError(response, now(), mapped.code, mapped.message, mapped.status);
-    });
+    void handleRequest(request, response, options, snapshots, replayEngine, now).catch(
+      (error: unknown) => {
+        const mapped = mapError(error);
+        const mode = (request.url ?? '').startsWith('/api/replays') ? 'REPLAY' : 'LIVE';
+        sendError(response, now(), mapped.code, mapped.message, mapped.status, [], mode);
+      },
+    );
   });
 }
 
@@ -45,11 +58,33 @@ async function handleRequest(
   response: ServerResponse,
   options: ApiServerOptions,
   snapshots: MarketSnapshotStore,
+  replayEngine: ReplayEngine | null,
   now: () => Date,
 ): Promise<void> {
   const method = request.method ?? 'GET';
   const parsedUrl = new URL(request.url ?? '/', 'http://localhost');
   const parts = parsedUrl.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+
+  if (method === 'GET' && parts.length === 2 && parts[0] === 'api' && parts[1] === 'replays') {
+    await sendReplayList(response, replayEngine, now);
+    return;
+  }
+
+  if (method === 'GET' && parts.length === 3 && parts[0] === 'api' && parts[1] === 'replays') {
+    await sendReplayCase(response, replayEngine, now, parts[2] ?? '');
+    return;
+  }
+
+  if (
+    method === 'POST' &&
+    parts.length === 4 &&
+    parts[0] === 'api' &&
+    parts[1] === 'replays' &&
+    parts[3] === 'simulations'
+  ) {
+    await sendReplaySimulation(response, request, replayEngine, now, parts[2] ?? '');
+    return;
+  }
 
   if (method === 'GET' && parts.length === 2 && parts[0] === 'api' && parts[1] === 'instruments') {
     const result = await options.marketData.discoverRealityInstruments();
@@ -58,7 +93,7 @@ async function handleRequest(
       asOf: result.source.providerTimestamp ?? result.source.receivedAt,
       freshness: freshnessFromSource(result.source, now()),
       data: result.data,
-      sourceRefs: [toSourceReference(result.source)],
+      sourceRefs: [toSourceReference(result.source, null, null)],
       warnings: freshnessWarnings(freshnessFromSource(result.source, now())),
     });
     return;
@@ -111,6 +146,12 @@ async function sendContext(
     options.marketData.getTicker(symbol),
     options.marketData.getOrderBook(symbol),
   ]);
+  let marketState: Awaited<ReturnType<PublicMarketDataProvider['getMarketStates']>> | null = null;
+  try {
+    marketState = await options.marketData.getMarketStates();
+  } catch (error) {
+    void error;
+  }
   const snapshot = snapshots.saveOrderBook(orderBook.data);
   const metrics = calculateMarketMetrics(
     snapshot,
@@ -122,13 +163,23 @@ async function sendContext(
     mode: 'LIVE',
     asOf: orderBook.source.providerTimestamp ?? orderBook.source.receivedAt,
     freshness,
-    data: { instrument, ticker: ticker.data, snapshot, metrics },
+    data: {
+      instrument,
+      ticker: ticker.data,
+      snapshot,
+      metrics,
+      marketState: marketState?.data ?? null,
+    },
     sourceRefs: [
-      toSourceReference(universe.source),
-      toSourceReference(ticker.source),
-      toSourceReference(orderBook.source),
+      toSourceReference(universe.source, symbol, null),
+      toSourceReference(ticker.source, symbol, null),
+      toSourceReference(orderBook.source, symbol, snapshot.snapshotId),
+      ...(marketState === null ? [] : [toSourceReference(marketState.source, null, null)]),
     ],
-    warnings: freshnessWarnings(freshness),
+    warnings: [
+      ...freshnessWarnings(freshness),
+      ...(marketState === null ? ['Market state was unavailable for this context response.'] : []),
+    ],
   });
 }
 
@@ -152,7 +203,7 @@ async function sendOrderBook(
     asOf: orderBook.source.providerTimestamp ?? orderBook.source.receivedAt,
     freshness,
     data: { snapshot, metrics },
-    sourceRefs: [toSourceReference(orderBook.source)],
+    sourceRefs: [toSourceReference(orderBook.source, symbol, snapshot.snapshotId)],
     warnings: freshnessWarnings(freshness),
   });
 }
@@ -208,8 +259,160 @@ async function sendSimulation(
     asOf: simulation.snapshotTimestamp ?? simulation.receivedTimestamp,
     freshness,
     data: simulation,
-    sourceRefs: [toSourceReference(snapshot.source)],
+    sourceRefs: [toSourceReference(snapshot.source, input.symbol, snapshot.snapshotId)],
     warnings: freshnessWarnings(freshness),
+  });
+}
+
+async function sendReplayList(
+  response: ServerResponse,
+  replayEngine: ReplayEngine | null,
+  now: () => Date,
+): Promise<void> {
+  if (replayEngine === null) {
+    sendError(
+      response,
+      now(),
+      'REPLAY_UNAVAILABLE',
+      'replay storage is not configured',
+      503,
+      [],
+      'REPLAY',
+    );
+    return;
+  }
+  const cases = await replayEngine.listCases();
+  const latest = cases.at(-1);
+  const asOf = latest?.manifest.replayAsOf ?? '1970-01-01T00:00:00.000Z';
+  const freshness = latest
+    ? {
+        state: 'fresh' as const,
+        reason: 'replay case metadata is available',
+        ageMs: 0,
+        clockSkewMs: 0,
+        timestampConflict: false,
+        providerTimestamp: null,
+        receivedAt: asOf,
+      }
+    : unavailableFreshness('no replay cases are available');
+  sendEnvelope(response, {
+    mode: 'REPLAY',
+    asOf,
+    freshness,
+    data: cases,
+    sourceRefs: cases.flatMap((replayCase) =>
+      replayCase.manifest.sources.map((source) => toSourceReference(source, null, null)),
+    ),
+    warnings: cases.length === 0 ? ['No captured replay cases are available.'] : [],
+  });
+}
+
+async function sendReplayCase(
+  response: ServerResponse,
+  replayEngine: ReplayEngine | null,
+  now: () => Date,
+  caseId: string,
+): Promise<void> {
+  if (replayEngine === null) {
+    sendError(
+      response,
+      now(),
+      'REPLAY_UNAVAILABLE',
+      'replay storage is not configured',
+      503,
+      [],
+      'REPLAY',
+    );
+    return;
+  }
+  const replayCase = await replayEngine.getCase(caseId);
+  if (replayCase === null) {
+    sendError(
+      response,
+      now(),
+      'REPLAY_CASE_NOT_FOUND',
+      `replay case ${caseId} was not found`,
+      404,
+      [],
+      'REPLAY',
+    );
+    return;
+  }
+  const orderBookSource = replayCase.manifest.sources.find(
+    (source) => source.snapshotId === replayCase.manifest.orderBookSnapshotId,
+  );
+  const freshness = orderBookSource
+    ? freshnessFromSource(
+        {
+          provider: orderBookSource.provider,
+          sourceId: orderBookSource.sourceId,
+          sourceType: orderBookSource.sourceType,
+          endpoint: orderBookSource.endpoint,
+          providerTimestamp: orderBookSource.providerTimestamp,
+          receivedAt: orderBookSource.receivedAt,
+          rawResponseHash: orderBookSource.rawResponseHash,
+          httpStatus: 200,
+        },
+        new Date(replayCase.manifest.replayAsOf),
+      )
+    : unavailableFreshness('replay order-book source is missing');
+  sendEnvelope(response, {
+    mode: 'REPLAY',
+    asOf: replayCase.manifest.replayAsOf,
+    freshness,
+    data: replayCase,
+    sourceRefs: replayCase.manifest.sources.map((source) => toSourceReference(source, null, null)),
+    warnings: freshnessWarnings(freshness),
+  });
+}
+
+async function sendReplaySimulation(
+  response: ServerResponse,
+  request: IncomingMessage,
+  replayEngine: ReplayEngine | null,
+  now: () => Date,
+  caseId: string,
+): Promise<void> {
+  if (replayEngine === null) {
+    sendError(
+      response,
+      now(),
+      'REPLAY_UNAVAILABLE',
+      'replay storage is not configured',
+      503,
+      [],
+      'REPLAY',
+    );
+    return;
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(await readBody(request)) as unknown;
+  } catch {
+    sendError(
+      response,
+      now(),
+      'INVALID_REQUEST',
+      'request body must be valid JSON',
+      400,
+      [],
+      'REPLAY',
+    );
+    return;
+  }
+  const parsed = ReplaySimulationRequestSchema.safeParse(payload);
+  if (!parsed.success) {
+    sendError(response, now(), 'INVALID_REQUEST', formatZodError(parsed.error), 400, [], 'REPLAY');
+    return;
+  }
+  const result = await replayEngine.simulate(caseId, parsed.data);
+  sendEnvelope(response, {
+    mode: 'REPLAY',
+    asOf: result.asOf,
+    freshness: result.freshness,
+    data: result,
+    sourceRefs: result.sourceRefs,
+    warnings: result.warnings,
   });
 }
 
@@ -224,14 +427,17 @@ function sendError(
   message: string,
   status: number,
   sourceRefs: SourceReference[] = [],
+  mode: 'LIVE' | 'REPLAY' = 'LIVE',
 ): void {
   const envelope: ApiErrorEnvelope = {
-    mode: 'LIVE',
+    mode,
     asOf: now.toISOString(),
     freshness: {
       state: 'unavailable',
       reason: message,
       ageMs: null,
+      clockSkewMs: null,
+      timestampConflict: false,
       providerTimestamp: null,
       receivedAt: null,
     },
@@ -268,9 +474,18 @@ function readBody(request: IncomingMessage): Promise<string> {
   });
 }
 
-function toSourceReference(source: SourceMetadata): SourceReference {
+function toSourceReference(
+  source: SourceMetadata | ReplaySourceReference,
+  providerSymbol: string | null,
+  snapshotId: string | null,
+): SourceReference {
+  const replaySource = isReplaySource(source) ? source : null;
   return {
     provider: source.provider,
+    sourceId: source.sourceId,
+    sourceType: source.sourceType,
+    providerSymbol: replaySource?.providerSymbol ?? providerSymbol,
+    snapshotId: replaySource?.snapshotId ?? snapshotId,
     endpoint: source.endpoint,
     rawResponseHash: source.rawResponseHash,
     providerTimestamp: source.providerTimestamp,
@@ -278,10 +493,28 @@ function toSourceReference(source: SourceMetadata): SourceReference {
   };
 }
 
+function isReplaySource(
+  source: SourceMetadata | ReplaySourceReference,
+): source is ReplaySourceReference {
+  return 'snapshotId' in source;
+}
+
 function freshnessWarnings(freshness: ReturnType<typeof freshnessFromSource>): string[] {
   return freshness.state === 'fresh'
     ? []
     : [`Market data is ${freshness.state}: ${freshness.reason}`];
+}
+
+function unavailableFreshness(reason: string) {
+  return {
+    state: 'unavailable' as const,
+    reason,
+    ageMs: null,
+    clockSkewMs: null,
+    timestampConflict: false,
+    providerTimestamp: null,
+    receivedAt: null,
+  };
 }
 
 function formatZodError(error: ZodError): string {
@@ -302,6 +535,15 @@ function mapError(error: unknown): {
   message: string;
   status: number;
 } {
+  if (error instanceof ReplayError) {
+    if (error.code === 'replay_case_not_found') {
+      return { code: 'REPLAY_CASE_NOT_FOUND', message: error.message, status: 404 };
+    }
+    if (error.code === 'replay_snapshot_not_found') {
+      return { code: 'REPLAY_SNAPSHOT_NOT_FOUND', message: error.message, status: 422 };
+    }
+    return { code: 'REPLAY_MANIFEST_INVALID', message: error.message, status: 422 };
+  }
   const status = classifyThrownError(error);
   const message = safeMessage(error);
   switch (status) {

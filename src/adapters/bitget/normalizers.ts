@@ -3,6 +3,7 @@ import {
   BitgetResponseBaseSchema,
   CalendarSchema,
   CandleSchema,
+  CompanyOverviewSchema,
   FillSchema,
   InstrumentSchema,
   MarketSchema,
@@ -10,6 +11,7 @@ import {
   StockInfoSchema,
   TickerSchema,
   type BitgetCalendar,
+  type BitgetCompanyOverview,
   type BitgetFill,
   type BitgetInstrument,
   type BitgetMarket,
@@ -132,6 +134,15 @@ export function normalizeCandles(raw: unknown, httpStatus = 200): string[][] {
 export function normalizeStockInfo(raw: unknown, httpStatus = 200): BitgetStockInfo[] {
   const response = parseBitgetResponse(raw, z.array(StockInfoSchema), httpStatus);
   return response.data;
+}
+
+export function normalizeCompanyOverview(raw: unknown, httpStatus = 200): BitgetCompanyOverview[] {
+  const response = parseBitgetResponse(
+    raw,
+    z.union([z.array(CompanyOverviewSchema), CompanyOverviewSchema]),
+    httpStatus,
+  );
+  return Array.isArray(response.data) ? response.data : [response.data];
 }
 
 export function normalizeMarketStates(raw: unknown, httpStatus = 200): BitgetMarket[] {

@@ -57,6 +57,7 @@ export const TickerSchema = z
     volume24h: NullableStringLike.optional(),
     quoteVolume: NullableStringLike.optional(),
     turnover24h: NullableStringLike.optional(),
+    platformTurnover24h: NullableStringLike.optional(),
     usdtVolume: NullableStringLike.optional(),
     ts: NullableStringLike.optional(),
   })
@@ -100,6 +101,8 @@ export const StockInfoSchema = z
   })
   .passthrough();
 
+export const CompanyOverviewSchema = z.record(z.string(), z.unknown());
+
 export const MarketStateSchema = z
   .object({
     state: z.string(),
@@ -138,6 +141,7 @@ export type BitgetTicker = z.infer<typeof TickerSchema>;
 export type BitgetOrderBook = z.infer<typeof OrderBookSchema>;
 export type BitgetFill = z.infer<typeof FillSchema>;
 export type BitgetStockInfo = z.infer<typeof StockInfoSchema>;
+export type BitgetCompanyOverview = z.infer<typeof CompanyOverviewSchema>;
 export type BitgetMarket = z.infer<typeof MarketSchema>;
 export type BitgetCalendar = z.infer<typeof CalendarSchema>;
 

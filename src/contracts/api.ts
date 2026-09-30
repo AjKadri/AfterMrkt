@@ -9,9 +9,16 @@ export const ExecutionSimulationRequestSchema = z.object({
   maximumAcceptableSlippageBps: DecimalStringSchema.optional(),
 });
 
+export const ReplaySimulationRequestSchema = z
+  .object({
+    requestedQuantity: DecimalStringSchema,
+    maximumAcceptableSlippageBps: DecimalStringSchema.optional(),
+  })
+  .strict();
+
 export type ExecutionSimulationRequest = z.infer<typeof ExecutionSimulationRequestSchema>;
 
-export type ApiMode = 'LIVE';
+export type ApiMode = 'LIVE' | 'REPLAY';
 
 export type ApiEnvelope<T> = {
   mode: ApiMode;
@@ -32,6 +39,10 @@ export type ApiErrorCode =
   | 'PROVIDER_MALFORMED'
   | 'PROVIDER_REJECTED'
   | 'INVALID_BOOK'
+  | 'REPLAY_CASE_NOT_FOUND'
+  | 'REPLAY_SNAPSHOT_NOT_FOUND'
+  | 'REPLAY_MANIFEST_INVALID'
+  | 'REPLAY_UNAVAILABLE'
   | 'INTERNAL_ERROR';
 
 export type ApiErrorEnvelope = ApiEnvelope<null> & {
