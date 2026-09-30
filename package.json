@@ -28,7 +28,8 @@
     "probe:context": "tsx scripts/probes/context.ts",
     "probe:context-replay": "tsx scripts/probes/context-replay.ts",
     "probe:demo-account": "tsx scripts/probes/demo-account.ts",
-    "probe:demo-plan": "tsx scripts/probes/demo-plan.ts"
+    "probe:demo-plan": "tsx scripts/probes/demo-plan.ts",
+    "probe:demo-lifecycle": "tsx scripts/probes/demo-lifecycle.ts"
   },
   "dependencies": {
     "decimal.js": "^10.6.0",

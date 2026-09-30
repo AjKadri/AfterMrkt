@@ -93,6 +93,50 @@ describe('Bitget Demo provider boundary', () => {
     const client = new BitgetDemoClient({ credentials: null });
     expect(client.credentialsConfigured).toBe(false);
   });
+
+  it('normalizes an empty Demo order-info payload as not found', async () => {
+    const client = new BitgetDemoClient({
+      baseUrl: 'https://api.example.test',
+      credentials: { apiKey: 'demo-key', secretKey: 'demo-secret', passphrase: 'demo-pass' },
+      now: () => NOW,
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: '00000',
+          msg: 'success',
+          requestTime: '1790719200000',
+          data: {},
+        }),
+        { status: 200 },
+      ),
+    );
+    await expect(client.getOrderByClientOid('missing-client-oid')).resolves.toBeNull();
+  });
+
+  it('preserves provider rejection taxonomy for unsupported Demo symbols', async () => {
+    const client = new BitgetDemoClient({
+      baseUrl: 'https://api.example.test',
+      credentials: { apiKey: 'demo-key', secretKey: 'demo-secret', passphrase: 'demo-pass' },
+      now: () => NOW,
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: '40034',
+          msg: 'Parameter RTSLAUSDT does not exist',
+          requestTime: '1790719200000',
+          data: null,
+        }),
+        { status: 400 },
+      ),
+    );
+    await expect(client.getOpenOrders('RTSLAUSDT')).rejects.toMatchObject({
+      status: 'provider_rejected',
+      providerCode: '40034',
+      providerMessage: 'Parameter RTSLAUSDT does not exist',
+    });
+  });
 });
 
 describe('deterministic position and confirmation workflow', () => {
