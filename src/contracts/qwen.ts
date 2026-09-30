@@ -1,35 +1,34 @@
 import { z } from 'zod';
 
-export const QwenEntitySchema = z.object({
-  name: z.string(),
-  ticker: z.string().nullable(),
-});
+export const QwenEntitySchema = z
+  .object({
+    name: z.string(),
+    ticker: z.string().nullable(),
+  })
+  .strict();
 
-export const QwenEvidenceSpanSchema = z.object({
-  id: z.string().min(1),
-  quote: z.string(),
-  start: z.number().int().nonnegative().nullable().optional(),
-  end: z.number().int().nonnegative().nullable().optional(),
-});
+export const QwenFactSchema = z
+  .object({
+    id: z.string().min(1),
+    statement: z.string().min(1),
+    evidenceSpanIds: z.array(z.string().min(1)).min(1),
+    supportingQuote: z.string().min(1).optional(),
+  })
+  .strict();
 
-export const QwenFactSchema = z.object({
-  id: z.string().min(1),
-  statement: z.string().min(1),
-  evidenceSpanIds: z.array(z.string().min(1)).min(1),
-});
-
-export const QwenEventSchema = z.object({
-  eventType: z.string(),
-  entities: z.array(QwenEntitySchema),
-  materiality: z.enum(['material', 'possibly_material', 'not_material', 'insufficient_evidence']),
-  facts: z.array(QwenFactSchema),
-  uncertainties: z.array(z.string()),
-  evidenceSpans: z.array(QwenEvidenceSpanSchema),
-  confidence: z.number().min(0).max(1),
-  sourceBound: z.boolean(),
-  model: z.string(),
-  promptVersion: z.string(),
-});
+export const QwenEventSchema = z
+  .object({
+    eventType: z.string(),
+    entities: z.array(QwenEntitySchema),
+    materiality: z.enum(['material', 'possibly_material', 'not_material', 'insufficient_evidence']),
+    facts: z.array(QwenFactSchema),
+    uncertainties: z.array(z.string()),
+    confidence: z.number().min(0).max(1),
+    sourceBound: z.boolean(),
+    model: z.string(),
+    promptVersion: z.string(),
+  })
+  .strict();
 
 export type QwenEvent = z.infer<typeof QwenEventSchema>;
 

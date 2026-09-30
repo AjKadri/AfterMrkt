@@ -23,6 +23,7 @@ const preferredTickers = (process.env.AFTERMRKT_EVENT_TICKERS ?? 'NVDA,TSLA,AAPL
   .split(',')
   .map((ticker) => ticker.trim().toUpperCase())
   .filter(Boolean);
+const proofAccession = process.env.AFTERMRKT_EVENT_ACCESSION ?? '0001045810-26-000073';
 const dataDirectory = process.env.AFTERMRKT_DATA_DIR ?? join(process.cwd(), '.agent', 'data-task4');
 const provider = new BitgetPublicMarketDataAdapter();
 const sec = new SecEdgarAdapter(
@@ -38,6 +39,7 @@ const historicalCase = await findHistoricalPostCloseCase(
   universe.data,
   markets.data,
   calendar.data,
+  proofAccession,
 );
 const { instrument, identity, filing, content, event, regularSessionClose, replayAsOf, nextOpen } =
   historicalCase;
@@ -137,6 +139,10 @@ const report = {
     uncertaintyCount: analysis.uncertainties.length,
     uncertainties: analysis.uncertainties,
     evidenceSpans: analysis.evidenceSpans,
+    evidenceBinding: {
+      status: analysis.status === 'validated' ? 'validated' : 'quarantined-or-unavailable',
+      issueCount: analysis.validationIssues.length,
+    },
     sourceBound: analysis.sourceBound,
     inputTokens: analysis.inputTokens,
     reasoningTokens: analysis.reasoningTokens,
@@ -208,6 +214,7 @@ async function findHistoricalPostCloseCase(
   instruments: NormalizedRealityInstrument[],
   marketStates: Parameters<typeof evaluatePostCloseWindow>[0]['markets'] & object,
   calendar: Parameters<typeof evaluatePostCloseWindow>[0]['calendar'] & object,
+  requiredAccession: string,
 ): Promise<{
   instrument: NormalizedRealityInstrument;
   identity: { ticker: string; cik: string; companyName: string };
@@ -224,6 +231,7 @@ async function findHistoricalPostCloseCase(
     const identity = await sec.getTickerCik(nativeTicker);
     const filings = await sec.getRecentFilings(nativeTicker, 40);
     for (const filing of filings) {
+      if (filing.accessionNumber !== requiredAccession) continue;
       if (filing.form !== '8-K' || filing.acceptanceTimestamp === null) continue;
       const close = resolveRegularSessionClose(filing.acceptanceTimestamp, marketStates, calendar);
       if (close === null || Date.parse(filing.acceptanceTimestamp) <= Date.parse(close)) continue;

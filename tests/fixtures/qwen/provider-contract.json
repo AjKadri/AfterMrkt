@@ -19,16 +19,16 @@
         "ticker": "string|null"
       }
     ],
-    "materiality": ["low", "medium", "high", "unknown"],
-    "facts": ["string"],
-    "uncertainties": ["string"],
-    "evidenceSpans": [
+    "materiality": ["material", "possibly_material", "not_material", "insufficient_evidence"],
+    "facts": [
       {
-        "quote": "string",
-        "start": "integer|null",
-        "end": "integer|null"
+        "id": "string",
+        "statement": "string",
+        "evidenceSpanIds": ["string"],
+        "supportingQuote": "string (optional)"
       }
     ],
+    "uncertainties": ["string"],
     "confidence": "number 0..1",
     "sourceBound": "boolean",
     "model": "string",

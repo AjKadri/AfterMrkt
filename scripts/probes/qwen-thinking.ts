@@ -7,6 +7,7 @@ import {
 } from '../../src/adapters/qwen/index.js';
 import { hashRawResponse, writeTextFile } from '../../src/observability/evidence.js';
 import { ProbeError, classifyThrownError } from '../../src/lib/errors.js';
+import { buildDeterministicEvidenceSpans } from '../../src/domain/event-evidence.js';
 import { createEvidenceDirectory } from './common.js';
 
 const timeoutMs = 60_000;
@@ -25,6 +26,9 @@ const packet = {
   excerptEndOffset:
     'Item 2.02 Results of Operations and Financial Condition. The registrant announced quarterly results in the supplied filing excerpt.'
       .length,
+  evidenceSpans: buildDeterministicEvidenceSpans(
+    'Item 2.02 Results of Operations and Financial Condition. The registrant announced quarterly results in the supplied filing excerpt.',
+  ),
 };
 
 const evidenceDirectory = await createEvidenceDirectory('qwen-thinking');

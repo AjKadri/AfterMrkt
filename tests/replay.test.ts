@@ -217,6 +217,7 @@ describe('capture persistence and replay', () => {
     expect(result.data.laterAnalyses.map((analysis) => analysis.analysisId)).toEqual([
       sha256('analysis-past-event'),
     ]);
+    expect(result.warnings[0]).toContain('generated later');
     expect(result.limitations[1]).toContain('no fabricated historical market snapshots');
   });
 });

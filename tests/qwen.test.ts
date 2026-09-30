@@ -15,10 +15,10 @@ describe('Qwen event contract', () => {
             id: 'fact-1',
             statement: 'The source describes quarterly results.',
             evidenceSpanIds: ['span-1'],
+            supportingQuote: 'quarterly results',
           },
         ],
         uncertainties: [],
-        evidenceSpans: [{ id: 'span-1', quote: 'quarterly results', start: null, end: null }],
         confidence: 0.8,
         sourceBound: true,
         model: 'qwen3.8-max',
@@ -34,29 +34,47 @@ describe('Qwen event contract', () => {
     expect(() => parseQwenEvent('```json\n{"eventType":"earnings"}\n```')).toThrow();
   });
 
-  it('accepts nullable evidence offsets required by the structured-output schema', () => {
-    const result = parseQwenEvent(
-      JSON.stringify({
-        eventType: 'earnings',
-        entities: [{ name: 'Micron Technology', ticker: 'MU' }],
-        materiality: 'possibly_material',
-        facts: [
-          {
-            id: 'fact-1',
-            statement: 'The source describes quarterly results.',
-            evidenceSpanIds: ['span-1'],
-          },
-        ],
-        uncertainties: [],
-        evidenceSpans: [{ id: 'span-1', quote: 'quarterly results', start: null, end: null }],
-        confidence: 0.8,
-        sourceBound: true,
-        model: 'qwen3.8-max',
-        promptVersion: 'event-extraction-v1',
-      }),
-    );
+  it('rejects a fact without a deterministic span reference', () => {
+    expect(() =>
+      parseQwenEvent(
+        JSON.stringify({
+          eventType: 'earnings',
+          entities: [],
+          materiality: 'insufficient_evidence',
+          facts: [{ id: 'fact-1', statement: 'Unbound claim.', evidenceSpanIds: [] }],
+          uncertainties: [],
+          confidence: 0,
+          sourceBound: false,
+          model: 'qwen3.8-max',
+          promptVersion: 'event-extraction-v1',
+        }),
+      ),
+    ).toThrow();
+  });
 
-    expect(result.evidenceSpans[0]?.start).toBeNull();
+  it('rejects model-owned evidence spans and offsets', () => {
+    expect(() =>
+      parseQwenEvent(
+        JSON.stringify({
+          eventType: 'earnings',
+          entities: [{ name: 'Micron Technology', ticker: 'MU' }],
+          materiality: 'possibly_material',
+          facts: [
+            {
+              id: 'fact-1',
+              statement: 'The source describes quarterly results.',
+              evidenceSpanIds: ['span-1'],
+            },
+          ],
+          uncertainties: [],
+          evidenceSpans: [{ id: 'span-1', quote: 'quarterly results', start: 1, end: 18 }],
+          confidence: 0.8,
+          sourceBound: true,
+          model: 'qwen3.8-max',
+          promptVersion: 'event-extraction-v1',
+        }),
+      ),
+    ).toThrow();
   });
 
   it('keeps the authenticated provider fixture redacted and schema-first', () => {
@@ -72,6 +90,11 @@ describe('Qwen event contract', () => {
       type: 'object',
       additionalProperties: false,
     });
+    expect(QWEN_EVENT_JSON_SCHEMA.schema).not.toHaveProperty('properties.evidenceSpans');
+    expect(QWEN_EVENT_JSON_SCHEMA.schema).not.toHaveProperty(
+      'required',
+      expect.arrayContaining(['evidenceSpans']),
+    );
   });
 
   it('records the redacted non-thinking comparison without provider secrets', () => {
@@ -106,7 +129,6 @@ describe('Qwen event contract', () => {
                   materiality: 'possibly_material',
                   facts: [],
                   uncertainties: [],
-                  evidenceSpans: [],
                   confidence: 0.5,
                   sourceBound: true,
                   model: 'qwen3.8-max',

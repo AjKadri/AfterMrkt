@@ -228,9 +228,15 @@ function buildFixture(input: {
       eventType: 'string',
       entities: [{ name: 'string', ticker: 'string|null' }],
       materiality: ['low', 'medium', 'high', 'unknown'],
-      facts: ['string'],
+      facts: [
+        {
+          id: 'string',
+          statement: 'string',
+          evidenceSpanIds: ['string'],
+          supportingQuote: 'string (optional)',
+        },
+      ],
       uncertainties: ['string'],
-      evidenceSpans: [{ quote: 'string', start: 'integer|null', end: 'integer|null' }],
       confidence: 'number 0..1',
       sourceBound: 'boolean',
       model: 'string',

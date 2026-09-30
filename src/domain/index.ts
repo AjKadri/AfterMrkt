@@ -39,6 +39,10 @@ export {
   isTransientQwenFailure,
   validateEvidenceBinding,
 } from './event-analysis.js';
+export {
+  DEFAULT_EVIDENCE_SPAN_MAX_CHARS,
+  buildDeterministicEvidenceSpans,
+} from './event-evidence.js';
 export type {
   EventAnalysisClient,
   EvidenceBindingIssue,

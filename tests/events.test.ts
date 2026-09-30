@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { QWEN_ANALYSIS_PROMPT_VERSION } from '../src/adapters/qwen/index.js';
 import {
   EventAnalysisService,
+  buildEvidencePacket,
   buildQwenUsageLedger,
   validateEvidenceBinding,
 } from '../src/domain/event-analysis.js';
+import { buildDeterministicEvidenceSpans } from '../src/domain/event-evidence.js';
 import { deduplicateSourceEvents, deriveEventContext } from '../src/domain/event-context.js';
 import { evaluatePostCloseWindow } from '../src/domain/event-window.js';
 import { canonicalJson } from '../src/lib/canonical.js';
@@ -12,7 +14,7 @@ import { ProbeError } from '../src/lib/errors.js';
 import { sha256 } from '../src/lib/hash.js';
 import { InMemoryCaptureStore } from '../src/persistence/store.js';
 import type { QwenCall } from '../src/adapters/qwen/index.js';
-import type { SourceEvent } from '../src/contracts/events.js';
+import type { EventAnalysis, SourceEvent } from '../src/contracts/events.js';
 import promptInjectionFixture from './fixtures/events/prompt-injection.json';
 
 const MARKETS = [
@@ -95,23 +97,84 @@ describe('event evidence pipeline', () => {
     );
   });
 
-  it('accepts only exact source-relative evidence and quarantines unsupported output', async () => {
+  it('builds stable application-owned spans with offsets and content hashes', () => {
+    const excerpt =
+      'Item 2.02 Results.\nThe filing reports quarterly results and annual guidance.\nThe source remains bounded.';
+    const first = buildDeterministicEvidenceSpans(excerpt, 48);
+    const second = buildDeterministicEvidenceSpans(excerpt, 48);
+
+    expect(first).toEqual(second);
+    expect(first.length).toBeGreaterThan(2);
+    for (const span of first) {
+      expect(span.text).toBe(excerpt.slice(span.startOffset, span.endOffset));
+      expect(sha256(span.text)).toBe(span.contentHash);
+    }
+    expect(first.map((span) => span.id)).toEqual(first.map((_span, index) => `span-${index + 1}`));
+  });
+
+  it('accepts valid single-span and multi-span fact references', () => {
     const event = makeEvent('source-3', '2026-09-29T20:01:00.000Z');
-    const valid = makeCall({
-      evidenceSpans: [{ id: 'span-1', quote: 'quarterly results', start: null, end: null }],
-      facts: [
+    const singleSpanOutput = makeOutput([
+      {
+        id: 'fact-1',
+        statement: 'The filing reports quarterly results.',
+        evidenceSpanIds: ['span-1'],
+        supportingQuote: 'quarterly results',
+      },
+    ]);
+    expect(validateEvidenceBinding(buildEvidencePacket(event), singleSpanOutput)).toEqual([]);
+
+    const multiSpanEvent = {
+      ...event,
+      excerpt: 'First sentence.\nSecond sentence.',
+    };
+    const multiSpanOutput = makeOutput([
+      {
+        id: 'fact-1',
+        statement: 'The source contains two bounded statements.',
+        evidenceSpanIds: ['span-1', 'span-2'],
+      },
+    ]);
+    expect(validateEvidenceBinding(buildEvidencePacket(multiSpanEvent), multiSpanOutput)).toEqual(
+      [],
+    );
+  });
+
+  it('rejects unknown span IDs and supporting quotes outside referenced spans', () => {
+    const event = makeEvent('binding-failures', '2026-09-29T20:01:00.000Z');
+    const unknownIdIssues = validateEvidenceBinding(
+      buildEvidencePacket(event),
+      makeOutput([
+        { id: 'fact-unknown', statement: 'Unknown.', evidenceSpanIds: ['span-unknown'] },
+      ]),
+    );
+    expect(unknownIdIssues).toContainEqual({
+      code: 'fact_evidence_span_missing',
+      detail: 'fact-unknown:span-unknown',
+    });
+
+    const quoteIssues = validateEvidenceBinding(
+      buildEvidencePacket(event),
+      makeOutput([
         {
-          id: 'fact-1',
-          statement: 'The filing reports quarterly results.',
+          id: 'fact-quote',
+          statement: 'The source contains a claim.',
           evidenceSpanIds: ['span-1'],
+          supportingQuote: 'outside the bounded span',
         },
-      ],
+      ]),
+    );
+    expect(quoteIssues).toContainEqual({
+      code: 'supporting_quote_not_in_referenced_span',
+      detail: 'fact-quote',
     });
+  });
+
+  it('quarantines unsupported output without a semantic or repair retry', async () => {
+    const event = makeEvent('source-3', '2026-09-29T20:01:00.000Z');
     const invalid = makeCall({
-      evidenceSpans: [{ id: 'span-1', quote: 'unsupported claim', start: null, end: null }],
-      facts: [{ id: 'fact-1', statement: 'Unsupported claim.', evidenceSpanIds: ['span-1'] }],
+      facts: [{ id: 'fact-1', statement: 'Unsupported claim.', evidenceSpanIds: ['unknown'] }],
     });
-    expect(validateEvidenceBinding(event, JSON.parse(valid.content) as never)).toEqual([]);
 
     let calls = 0;
     const service = new EventAnalysisService(new InMemoryCaptureStore(), {
@@ -125,66 +188,8 @@ describe('event evidence pipeline', () => {
     expect(analysis.status).toBe('quarantined');
     expect(analysis.errorCode).toBe('evidence_binding_failed');
     expect(calls).toBe(1);
+    expect(analysis.evidenceSpans).toEqual(buildEvidencePacket(event).evidenceSpans);
     expect(buildQwenUsageLedger([analysis]).analysisCount).toBe(1);
-  });
-
-  it('binds absolute sanitized-source offsets to the bounded excerpt', () => {
-    const excerpt = 'Item 2.02. The filing reports quarterly results.';
-    const event = {
-      ...makeEvent('absolute-offsets', '2026-09-29T20:01:00.000Z'),
-      excerpt,
-      details: {
-        excerptStartOffset: 500,
-        excerptEndOffset: 500 + excerpt.length,
-      },
-    };
-    const issues = validateEvidenceBinding(event, {
-      eventType: 'earnings',
-      entities: [],
-      materiality: 'possibly_material',
-      facts: [
-        {
-          id: 'fact-1',
-          statement: 'The filing reports quarterly results.',
-          evidenceSpanIds: ['span-1'],
-        },
-      ],
-      uncertainties: [],
-      evidenceSpans: [
-        {
-          id: 'span-1',
-          quote: 'The filing reports quarterly results.',
-          start: 511,
-          end: 548,
-        },
-      ],
-      confidence: 0.8,
-      sourceBound: true,
-      model: 'qwen3.8-max',
-      promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
-    });
-    expect(issues).toEqual([]);
-  });
-
-  it('rejects absolute offsets that do not resolve to the supplied quote', () => {
-    const event = {
-      ...makeEvent('invalid-absolute-offsets', '2026-09-29T20:01:00.000Z'),
-      excerpt: 'Item 2.02. The filing reports quarterly results.',
-      details: { excerptStartOffset: 500, excerptEndOffset: 548 },
-    };
-    const issues = validateEvidenceBinding(event, {
-      eventType: 'earnings',
-      entities: [],
-      materiality: 'possibly_material',
-      facts: [{ id: 'fact-1', statement: 'Claim.', evidenceSpanIds: ['span-1'] }],
-      uncertainties: [],
-      evidenceSpans: [{ id: 'span-1', quote: 'quarterly results', start: 512, end: 529 }],
-      confidence: 0.5,
-      sourceBound: true,
-      model: 'qwen3.8-max',
-      promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
-    });
-    expect(issues).toEqual([{ code: 'evidence_span_offset_mismatch', detail: 'span-1' }]);
   });
 
   it('rejects an adversarial prompt-injection-shaped claim that is absent from the source', () => {
@@ -198,14 +203,15 @@ describe('event evidence pipeline', () => {
       materiality: 'possibly_material',
       facts: promptInjectionFixture.modelOutput.facts,
       uncertainties: [],
-      evidenceSpans: promptInjectionFixture.modelOutput.evidenceSpans,
       confidence: 0.9,
       sourceBound: true,
       model: 'qwen3.8-max',
       promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
     };
-    const issues = validateEvidenceBinding(event, output as never);
-    expect(issues.some((issue) => issue.code === 'evidence_quote_not_found')).toBe(true);
+    const issues = validateEvidenceBinding(buildEvidencePacket(event), output as never);
+    expect(issues.some((issue) => issue.code === 'supporting_quote_not_in_referenced_span')).toBe(
+      true,
+    );
   });
 
   it('retries one transient failure and then caches the immutable result', async () => {
@@ -217,7 +223,6 @@ describe('event evidence pipeline', () => {
         calls += 1;
         if (calls === 1) throw new ProbeError('request_timeout', 'fixture timeout');
         return makeCall({
-          evidenceSpans: [{ id: 'span-1', quote: 'quarterly results', start: null, end: null }],
           facts: [
             {
               id: 'fact-1',
@@ -236,6 +241,8 @@ describe('event evidence pipeline', () => {
     expect(second.analysisId).toBe(first.analysisId);
     expect(calls).toBe(2);
     expect(first.promptVersion).toBe(QWEN_ANALYSIS_PROMPT_VERSION);
+    expect(first.schemaVersion).toBe('event-analysis-v3');
+    expect(first.evidenceSpans[0]?.startOffset).toBe(0);
     expect(JSON.stringify(first)).not.toContain('chain_of_thought');
     expect(JSON.stringify(first)).not.toContain('reasoning_content');
   });
@@ -251,7 +258,34 @@ describe('event evidence pipeline', () => {
     const analysis = await service.analyze(event);
     expect(analysis.status).toBe('unavailable');
     expect(analysis.attemptCount).toBe(1);
+    expect(analysis.evidenceSpans).toHaveLength(1);
     expect(analysis.validationIssues).toEqual(['authentication_invalid']);
+  });
+
+  it('preserves a prior quarantined analysis while creating a new schema-versioned record', async () => {
+    const store = new InMemoryCaptureStore();
+    const event = makeEvent('schema-migration', '2026-09-29T20:01:00.000Z');
+    const legacy = makeLegacyQuarantinedAnalysis(event.eventId);
+    await store.saveEventAnalysis(legacy);
+    const service = new EventAnalysisService(store, {
+      model: 'qwen3.8-max',
+      analyzeEvidence: async () =>
+        makeCall({
+          facts: [
+            {
+              id: 'fact-1',
+              statement: 'The filing reports quarterly results.',
+              evidenceSpanIds: ['span-1'],
+            },
+          ],
+        }),
+    });
+
+    const corrected = await service.analyze(event);
+    expect(corrected.schemaVersion).toBe('event-analysis-v3');
+    expect(corrected.status).toBe('validated');
+    expect(await store.getEventAnalysis(legacy.analysisId)).toEqual(legacy);
+    expect(await store.listEventAnalyses(event.eventId)).toHaveLength(2);
   });
 
   it('labels qualifying events as pending until analysis exists', () => {
@@ -292,8 +326,12 @@ function makeEvent(externalId: string, sourceAvailableAt: string): SourceEvent {
 }
 
 function makeCall(input: {
-  evidenceSpans: Array<{ id: string; quote: string; start: number | null; end: number | null }>;
-  facts: Array<{ id: string; statement: string; evidenceSpanIds: string[] }>;
+  facts: Array<{
+    id: string;
+    statement: string;
+    evidenceSpanIds: string[];
+    supportingQuote?: string;
+  }>;
 }): QwenCall {
   const content = JSON.stringify({
     eventType: 'earnings',
@@ -301,7 +339,6 @@ function makeCall(input: {
     materiality: 'possibly_material',
     facts: input.facts,
     uncertainties: [],
-    evidenceSpans: input.evidenceSpans,
     confidence: 0.8,
     sourceBound: true,
     model: 'qwen3.8-max',
@@ -333,4 +370,59 @@ function makeCall(input: {
     providerReportedModel: 'qwen3.8-max',
     thinkingMode: 'disabled',
   };
+}
+
+function makeOutput(
+  facts: Array<{
+    id: string;
+    statement: string;
+    evidenceSpanIds: string[];
+    supportingQuote?: string;
+  }>,
+) {
+  return {
+    eventType: 'earnings',
+    entities: [{ name: 'Micron Technology', ticker: 'MU' }],
+    materiality: 'possibly_material' as const,
+    facts,
+    uncertainties: [],
+    confidence: 0.8,
+    sourceBound: true,
+    model: 'qwen3.8-max',
+    promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
+  };
+}
+
+function makeLegacyQuarantinedAnalysis(eventId: string): EventAnalysis {
+  return {
+    analysisId: sha256('legacy-quarantined-analysis'),
+    eventId,
+    model: 'qwen3.8-max',
+    providerReportedModel: 'qwen3.8-max',
+    thinkingMode: 'disabled' as const,
+    promptVersion: 'event-evidence-v2',
+    schemaVersion: 'event-analysis-v2',
+    eventType: 'earnings',
+    entities: [],
+    status: 'quarantined' as const,
+    materiality: 'insufficient_evidence' as const,
+    facts: [],
+    uncertainties: ['legacy record'],
+    evidenceSpans: [{ id: 'span-1', quote: 'quarterly results', start: null, end: null }],
+    confidence: null,
+    sourceBound: false,
+    inputTokens: 1,
+    reasoningTokens: null,
+    outputTokens: 1,
+    totalTokens: 2,
+    cacheTokens: 0,
+    providerReportedCostUsd: null,
+    estimatedCost: null,
+    latencyMs: 1,
+    processedAt: '2026-09-29T20:02:00.000Z',
+    attemptCount: 1,
+    retryReason: null,
+    errorCode: 'evidence_binding_failed',
+    validationIssues: ['legacy'],
+  } as unknown as EventAnalysis;
 }

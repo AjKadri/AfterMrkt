@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { EvidenceSpanSchema } from './evidence.js';
 
 const DateTimeSchema = z.string().datetime({ offset: true });
 const HashSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -24,12 +25,7 @@ export const SourceEventSchema = z.object({
   details: EventSourceDetailsSchema,
 });
 
-export const EventAnalysisEvidenceSpanSchema = z.object({
-  id: z.string().min(1),
-  quote: z.string().min(1),
-  start: z.number().int().nonnegative().nullable(),
-  end: z.number().int().nonnegative().nullable(),
-});
+export const EventAnalysisEvidenceSpanSchema = EvidenceSpanSchema;
 
 export const EventAnalysisEntitySchema = z.object({
   name: z.string().min(1),
@@ -40,6 +36,7 @@ export const EventAnalysisFactSchema = z.object({
   id: z.string().min(1),
   statement: z.string().min(1),
   evidenceSpanIds: z.array(z.string().min(1)).min(1),
+  supportingQuote: z.string().min(1).optional(),
 });
 
 export const EventAnalysisMaterialitySchema = z.enum([

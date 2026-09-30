@@ -212,7 +212,10 @@ export class EventReplayEngine {
         analyses,
         laterAnalyses,
       },
-      warnings: laterAnalyses.length === 0 ? [] : ['some analyses were processed after replayAsOf'],
+      warnings:
+        laterAnalyses.length === 0
+          ? []
+          : ['analysis was generated later and is not part of the historical replay context'],
       limitations: [
         'Event replay uses immutable SEC source events and persisted analyses without provider calls.',
         'This event-only replay intentionally contains no fabricated historical market snapshots.',

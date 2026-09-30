@@ -1,6 +1,7 @@
 import { canonicalJson } from '../lib/canonical.js';
 import { sha256 } from '../lib/hash.js';
 import { ProbeError } from '../lib/errors.js';
+import type { EvidenceSpan } from '../contracts/evidence.js';
 import {
   EventAnalysisSchema,
   SourceEventSchema,
@@ -18,6 +19,7 @@ import {
 import type { QwenEvent } from '../contracts/qwen.js';
 import type { CaptureStore } from '../persistence/types.js';
 import { deduplicateSourceEvents } from './event-context.js';
+import { buildDeterministicEvidenceSpans } from './event-evidence.js';
 
 export type EventAnalysisClient = {
   model: string;
@@ -68,11 +70,12 @@ export function buildEvidencePacket(
     boundedExcerpt: event.excerpt,
     excerptStartOffset,
     excerptEndOffset,
+    evidenceSpans: buildDeterministicEvidenceSpans(event.excerpt),
   };
 }
 
 export function validateEvidenceBinding(
-  event: SourceEvent,
+  packet: QwenEvidencePacket,
   output: QwenEvent,
 ): EvidenceBindingIssue[] {
   const issues: EvidenceBindingIssue[] = [];
@@ -82,54 +85,27 @@ export function validateEvidenceBinding(
       detail: output.promptVersion,
     });
   }
-  const spans = new Map<string, QwenEvent['evidenceSpans'][number]>();
-  const excerptStartOffset =
-    typeof event.details.excerptStartOffset === 'number' ? event.details.excerptStartOffset : 0;
-  const excerptEndOffset =
-    typeof event.details.excerptEndOffset === 'number'
-      ? event.details.excerptEndOffset
-      : excerptStartOffset + event.excerpt.length;
-  for (const span of output.evidenceSpans) {
+  if (packet.excerptEndOffset - packet.excerptStartOffset !== packet.boundedExcerpt.length) {
+    issues.push({
+      code: 'evidence_excerpt_bounds_mismatch',
+      detail: `${packet.excerptStartOffset}:${packet.excerptEndOffset}`,
+    });
+  }
+  const spans = new Map<string, EvidenceSpan>();
+  for (const span of packet.evidenceSpans) {
     if (spans.has(span.id)) {
       issues.push({ code: 'duplicate_evidence_span_id', detail: span.id });
       continue;
     }
     spans.set(span.id, span);
-    const quoteStart = span.start;
-    const quoteEnd = span.end;
-    if (quoteStart !== null && quoteStart !== undefined) {
-      const usesAbsoluteSourceOffsets =
-        quoteEnd !== null &&
-        quoteEnd !== undefined &&
-        quoteStart >= excerptStartOffset &&
-        quoteEnd <= excerptEndOffset;
-      const localStart = usesAbsoluteSourceOffsets ? quoteStart - excerptStartOffset : quoteStart;
-      const localEnd =
-        quoteEnd === null || quoteEnd === undefined
-          ? null
-          : usesAbsoluteSourceOffsets
-            ? quoteEnd - excerptStartOffset
-            : quoteEnd;
-      const exactQuoteMatches =
-        localEnd !== null &&
-        localStart >= 0 &&
-        localEnd <= event.excerpt.length &&
-        event.excerpt.slice(localStart, localEnd) === span.quote;
-      if (
-        quoteEnd === undefined ||
-        quoteEnd === null ||
-        quoteEnd < quoteStart ||
-        !exactQuoteMatches
-      ) {
-        issues.push({
-          code: 'evidence_span_offset_mismatch',
-          detail: span.id,
-        });
-      }
-    } else if (quoteEnd !== undefined && quoteEnd !== null) {
-      issues.push({ code: 'evidence_span_offset_mismatch', detail: span.id });
-    } else if (!event.excerpt.includes(span.quote)) {
-      issues.push({ code: 'evidence_quote_not_found', detail: span.id });
+    const expectedText = packet.boundedExcerpt.slice(span.startOffset, span.endOffset);
+    if (
+      span.endOffset <= span.startOffset ||
+      span.endOffset > packet.boundedExcerpt.length ||
+      expectedText !== span.text ||
+      sha256(span.text) !== span.contentHash
+    ) {
+      issues.push({ code: 'evidence_span_integrity_failed', detail: span.id });
     }
   }
   if (!output.sourceBound) {
@@ -146,6 +122,17 @@ export function validateEvidenceBinding(
           detail: `${fact.id}:${spanId}`,
         });
       }
+    }
+    if (
+      fact.supportingQuote !== undefined &&
+      !fact.evidenceSpanIds.some((spanId) =>
+        spans.get(spanId)?.text.includes(fact.supportingQuote ?? ''),
+      )
+    ) {
+      issues.push({
+        code: 'supporting_quote_not_in_referenced_span',
+        detail: fact.id,
+      });
     }
   }
   return issues;
@@ -214,10 +201,12 @@ export class EventAnalysisService {
             errorCode: errorCode(lastError),
             validationIssues: errorCode(lastError) === null ? [] : [errorCode(lastError) as string],
             thinkingMode,
+            evidenceSpans: packet.evidenceSpans,
             processedAt: this.now().toISOString(),
           })
         : analysisFromCall({
             event,
+            packet,
             call,
             attemptCount,
             retryReason,
@@ -283,6 +272,7 @@ export function buildQwenUsageLedger(analyses: EventAnalysis[]): QwenUsageLedger
 
 function analysisFromCall(input: {
   event: SourceEvent;
+  packet: QwenEvidencePacket;
   call: QwenCall;
   attemptCount: number;
   retryReason: string | null;
@@ -290,11 +280,12 @@ function analysisFromCall(input: {
 }): EventAnalysis {
   try {
     const output = parseQwenEvent(input.call.content);
-    const bindingIssues = validateEvidenceBinding(input.event, output);
+    const bindingIssues = validateEvidenceBinding(input.packet, output);
     const status = bindingIssues.length === 0 ? 'validated' : 'quarantined';
     const errorCode = bindingIssues.length === 0 ? null : 'evidence_binding_failed';
     return makeAnalysis({
       event: input.event,
+      evidenceSpans: input.packet.evidenceSpans,
       call: input.call,
       output,
       status,
@@ -307,6 +298,7 @@ function analysisFromCall(input: {
   } catch (error) {
     return makeAnalysis({
       event: input.event,
+      evidenceSpans: input.packet.evidenceSpans,
       call: input.call,
       output: null,
       status: 'quarantined',
@@ -323,6 +315,7 @@ function analysisFromCall(input: {
 
 function makeAnalysis(input: {
   event: SourceEvent;
+  evidenceSpans: EvidenceSpan[];
   call: QwenCall;
   output: QwenEvent | null;
   status: EventAnalysis['status'];
@@ -335,11 +328,6 @@ function makeAnalysis(input: {
   const output = input.output;
   const materiality = output?.materiality ?? 'insufficient_evidence';
   const facts = output?.facts ?? [];
-  const evidenceSpans = (output?.evidenceSpans ?? []).map((span) => ({
-    ...span,
-    start: span.start ?? null,
-    end: span.end ?? null,
-  }));
   const sourceBound = output?.sourceBound ?? false;
   const contentHash = canonicalJson({
     eventId: input.event.eventId,
@@ -347,6 +335,7 @@ function makeAnalysis(input: {
     promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
     schemaVersion: QWEN_SCHEMA_VERSION,
     thinkingMode: input.call.thinkingMode,
+    evidenceSpans: input.evidenceSpans,
     status: input.status,
     output,
     errorCode: input.errorCode,
@@ -366,7 +355,7 @@ function makeAnalysis(input: {
     materiality,
     facts,
     uncertainties: output?.uncertainties ?? [],
-    evidenceSpans,
+    evidenceSpans: input.evidenceSpans,
     confidence: output?.confidence ?? null,
     sourceBound,
     inputTokens: input.call.accounting.inputTokens,
@@ -393,6 +382,7 @@ function unavailableAnalysis(input: {
   errorCode: string | null;
   validationIssues: string[];
   thinkingMode: QwenThinkingMode;
+  evidenceSpans: EvidenceSpan[];
   processedAt: string;
 }): EventAnalysis {
   const contentHash = canonicalJson({
@@ -401,6 +391,7 @@ function unavailableAnalysis(input: {
     promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
     schemaVersion: QWEN_SCHEMA_VERSION,
     thinkingMode: input.thinkingMode,
+    evidenceSpans: input.evidenceSpans,
     status: 'unavailable',
     errorCode: input.errorCode,
     validationIssues: input.validationIssues,
@@ -419,7 +410,7 @@ function unavailableAnalysis(input: {
     materiality: 'insufficient_evidence',
     facts: [],
     uncertainties: ['Qwen analysis was unavailable.'],
-    evidenceSpans: [],
+    evidenceSpans: input.evidenceSpans,
     confidence: null,
     sourceBound: false,
     inputTokens: null,
