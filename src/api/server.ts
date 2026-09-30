@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import Decimal from 'decimal.js';
 import { ZodError } from 'zod';
 import { classifyThrownError, ProbeError } from '../lib/errors.js';
 import { BitgetDemoClient, type BitgetDemoRealityAdapter } from '../adapters/bitget/demo.js';
@@ -15,9 +16,14 @@ import {
   type ExecutionSimulationRequest,
 } from '../contracts/api.js';
 import { freshnessFromSource } from '../domain/freshness.js';
-import { deriveEventContext, uncheckedEventContext } from '../domain/event-context.js';
 import { deriveSessionContext } from '../domain/event-window.js';
-import { buildAfterMrktContext, type AfterMrktContext } from '../domain/market-context.js';
+import {
+  buildAfterMrktContext,
+  calculateRTokenMove,
+  deriveUnifiedEventContext,
+  selectRTokenCloseReference,
+  type AfterMrktContext,
+} from '../domain/market-context.js';
 import { EventReplayEngine, ReplayEngine, ReplayError } from '../domain/replay.js';
 import {
   calculateMarketMetrics,
@@ -27,15 +33,35 @@ import {
 } from '../domain/market-quality.js';
 import { InMemorySnapshotStore, type MarketSnapshotStore } from '../domain/snapshots.js';
 import type { SourceMetadata, SourceReference } from '../domain/types.js';
-import type { CaptureStore, ReplaySourceReference } from '../persistence/types.js';
+import type {
+  CaptureStore,
+  EventReplayCase,
+  ReplayCase,
+  ReplaySourceReference,
+} from '../persistence/types.js';
 import { ExecutionError, ExecutionService } from '../domain/execution.js';
 import type { ExecutionStore } from '../domain/execution-store.js';
 import { InMemoryExecutionStore } from '../persistence/execution-store.js';
+import {
+  EXECUTION_CAPABILITIES,
+  toProductContext,
+  toProductEvent,
+  toProductEventAnalysis,
+  toProductEventContext,
+  toProductInstrumentListItem,
+  toProductReplayDetail,
+  toProductReplaySummary,
+  toProductSimulation,
+  toProductSourceReference,
+  type ProductInstrumentListItem,
+  type ProductSourceReference,
+} from './product-contracts.js';
 
 export type ApiServerOptions = {
   marketData: PublicMarketDataProvider;
   snapshots?: MarketSnapshotStore;
   replayStore?: CaptureStore;
+  eventReplayStore?: CaptureStore;
   replayEngine?: ReplayEngine;
   eventReplayEngine?: EventReplayEngine;
   eventStore?: CaptureStore;
@@ -46,7 +72,33 @@ export type ApiServerOptions = {
   qualityConfig?: Partial<MarketQualityConfig>;
 };
 
+type ContextCacheEntry = {
+  context: AfterMrktContext;
+  cachedAtMs: number;
+};
+
+type InstrumentListCacheEntry = {
+  expiresAtMs: number;
+  data: {
+    instruments: ProductInstrumentListItem[];
+    executionCapabilities: typeof EXECUTION_CAPABILITIES;
+  };
+  sourceRefs: ProductSourceReference[];
+  warnings: string[];
+  asOf: string;
+  freshness: ReturnType<typeof freshnessFromSource>;
+};
+
+type ApiRuntime = {
+  contextCache: Map<string, ContextCacheEntry>;
+  instrumentListCache: InstrumentListCacheEntry | null;
+};
+
 const MAX_BODY_BYTES = 128 * 1024;
+const CONTEXT_CACHE_TTL_MS = 5_000;
+const INSTRUMENT_LIST_CACHE_TTL_MS = 5_000;
+const DEFAULT_INSTRUMENT_LIST_LIMIT = 12;
+const MAX_INSTRUMENT_LIST_LIMIT = 40;
 
 export function createApiServer(options: ApiServerOptions): Server {
   const snapshots = options.snapshots ?? createDefaultSnapshotStore();
@@ -55,9 +107,10 @@ export function createApiServer(options: ApiServerOptions): Server {
     (options.replayStore === undefined
       ? null
       : new ReplayEngine(options.replayStore, options.qualityConfig));
+  const eventReplayStore = options.eventReplayStore ?? options.replayStore;
   const eventReplayEngine =
     options.eventReplayEngine ??
-    (options.replayStore === undefined ? null : new EventReplayEngine(options.replayStore));
+    (eventReplayStore === undefined ? null : new EventReplayEngine(eventReplayStore));
   const now = options.now ?? (() => new Date());
   const executionStore = options.executionStore ?? new InMemoryExecutionStore();
   const demo = options.demo ?? new BitgetDemoClient();
@@ -71,6 +124,10 @@ export function createApiServer(options: ApiServerOptions): Server {
       now,
       qualityConfig: options.qualityConfig ?? {},
     });
+  const runtime: ApiRuntime = {
+    contextCache: new Map(),
+    instrumentListCache: null,
+  };
 
   return createServer((request, response) => {
     void handleRequest(
@@ -82,6 +139,7 @@ export function createApiServer(options: ApiServerOptions): Server {
       eventReplayEngine,
       execution,
       now,
+      runtime,
     ).catch((error: unknown) => {
       const mapped = mapError(error);
       const mode = (request.url ?? '').startsWith('/api/replays') ? 'REPLAY' : 'LIVE';
@@ -108,6 +166,7 @@ async function handleRequest(
   eventReplayEngine: EventReplayEngine | null,
   execution: ExecutionService,
   now: () => Date,
+  runtime: ApiRuntime,
 ): Promise<void> {
   const method = request.method ?? 'GET';
   const parsedUrl = new URL(request.url ?? '/', 'http://localhost');
@@ -175,12 +234,12 @@ async function handleRequest(
   }
 
   if (method === 'GET' && parts.length === 2 && parts[0] === 'api' && parts[1] === 'replays') {
-    await sendReplayList(response, replayEngine, now);
+    await sendReplayList(response, replayEngine, eventReplayEngine, now);
     return;
   }
 
   if (method === 'GET' && parts.length === 3 && parts[0] === 'api' && parts[1] === 'replays') {
-    await sendReplayCase(response, replayEngine, now, parts[2] ?? '');
+    await sendReplayCase(response, replayEngine, eventReplayEngine, now, parts[2] ?? '');
     return;
   }
 
@@ -234,15 +293,7 @@ async function handleRequest(
   }
 
   if (method === 'GET' && parts.length === 2 && parts[0] === 'api' && parts[1] === 'instruments') {
-    const result = await options.marketData.discoverRealityInstruments();
-    sendEnvelope(response, {
-      mode: 'LIVE',
-      asOf: result.source.providerTimestamp ?? result.source.receivedAt,
-      freshness: freshnessFromSource(result.source, now()),
-      data: result.data,
-      sourceRefs: [toSourceReference(result.source, null, null)],
-      warnings: freshnessWarnings(freshnessFromSource(result.source, now())),
-    });
+    await sendInstrumentList(response, options, now, parsedUrl, runtime);
     return;
   }
 
@@ -253,7 +304,7 @@ async function handleRequest(
     parts[1] === 'instruments' &&
     parts[3] === 'context'
   ) {
-    await sendContext(response, options, snapshots, now, parts[2] ?? '');
+    await sendContext(response, options, snapshots, now, parts[2] ?? '', runtime);
     return;
   }
 
@@ -276,13 +327,214 @@ async function handleRequest(
   sendError(response, now(), 'INVALID_REQUEST', 'route not found', 404);
 }
 
+async function sendInstrumentList(
+  response: ServerResponse,
+  options: ApiServerOptions,
+  now: () => Date,
+  parsedUrl: URL,
+  runtime: ApiRuntime,
+): Promise<void> {
+  const currentTimeMs = now().getTime();
+  const cached = runtime.instrumentListCache;
+  if (cached !== null && cached.expiresAtMs > currentTimeMs) {
+    sendEnvelope(response, {
+      mode: 'LIVE',
+      asOf: cached.asOf,
+      freshness: cached.freshness,
+      data: cached.data,
+      sourceRefs: cached.sourceRefs,
+      warnings: cached.warnings,
+    });
+    return;
+  }
+
+  const requestedLimit = Number(
+    parsedUrl.searchParams.get('limit') ?? DEFAULT_INSTRUMENT_LIST_LIMIT,
+  );
+  const limit = Number.isSafeInteger(requestedLimit)
+    ? Math.max(1, Math.min(requestedLimit, MAX_INSTRUMENT_LIST_LIMIT))
+    : DEFAULT_INSTRUMENT_LIST_LIMIT;
+  const universe = await options.marketData.discoverRealityInstruments();
+  const tickers = await safeProviderCall(() => options.marketData.getAllTickers());
+  const marketState = await safeProviderCall(() => options.marketData.getMarketStates());
+  const marketCalendar = await safeProviderCall(() => options.marketData.getMarketCalendar());
+  const asOf = now();
+  const session = deriveSessionContext({
+    asOf: asOf.toISOString(),
+    markets: marketState?.data ?? null,
+    calendar: marketCalendar?.data ?? null,
+  });
+  const store = options.eventStore ?? options.replayStore;
+  const events = store === undefined ? [] : await safeStoreCall(() => store.listSourceEvents());
+  const analyses = store === undefined ? [] : await safeStoreCall(() => store.listEventAnalyses());
+  const tickerBySymbol = new Map(
+    (tickers?.data ?? []).map((ticker) => [ticker.providerSymbol, ticker]),
+  );
+  const mappedOnline = universe.data
+    .filter(
+      (instrument) =>
+        instrument.mappingStatus === 'mapped' &&
+        instrument.nativeTicker !== null &&
+        instrument.status?.toLowerCase() === 'online',
+    )
+    .map((instrument) => ({ instrument, ticker: tickerBySymbol.get(instrument.providerSymbol) }))
+    .filter(
+      (item): item is typeof item & { ticker: NonNullable<typeof item.ticker> } =>
+        item.ticker !== undefined,
+    )
+    .sort((left, right) =>
+      compareInformationalDecimal(
+        left.ticker.turnover24h ?? left.ticker.platformTurnover24h ?? left.ticker.quoteVolume,
+        right.ticker.turnover24h ?? right.ticker.platformTurnover24h ?? right.ticker.quoteVolume,
+      ),
+    );
+  const selected = mappedOnline.slice(0, limit);
+  const listSnapshots = createDefaultSnapshotStore();
+  const listItems = await Promise.all(
+    selected.map(async ({ instrument, ticker }) => {
+      const [orderBook, historicalCandles] = await Promise.all([
+        safeProviderCall(() => options.marketData.getOrderBook(instrument.providerSymbol)),
+        session.previousRegularSessionClose === null
+          ? Promise.resolve(null)
+          : safeProviderCall(() =>
+              options.marketData.getHistoricalCandles(instrument.providerSymbol, {
+                interval: '1m',
+                limit: 100,
+                endTime: String(Date.parse(session.previousRegularSessionClose as string)),
+              }),
+            ),
+      ]);
+      const snapshot = orderBook === null ? null : listSnapshots.saveOrderBook(orderBook.data);
+      const metrics =
+        snapshot === null
+          ? null
+          : calculateMarketMetrics(
+              snapshot,
+              asOf,
+              resolveMarketQualityConfig(options.qualityConfig),
+            );
+      const reference = selectRTokenCloseReference({
+        providerSymbol: instrument.providerSymbol,
+        regularClose: session.previousRegularSessionClose,
+        contextAsOf: asOf.toISOString(),
+        candles:
+          historicalCandles === null
+            ? null
+            : {
+                data: historicalCandles.data,
+                interval: '1m',
+                source: historicalCandles.source,
+                sourceRef: toSourceReference(
+                  historicalCandles.source,
+                  instrument.providerSymbol,
+                  null,
+                ),
+              },
+      });
+      const move = calculateRTokenMove({
+        currentPrice: ticker.lastPrice,
+        reference,
+        contextAsOf: asOf.toISOString(),
+      });
+      const eventContext =
+        store === undefined
+          ? null
+          : deriveUnifiedEventContext({
+              providerSymbol: instrument.providerSymbol,
+              events: events.filter((event) => event.providerSymbol === instrument.providerSymbol),
+              analyses,
+              contextAsOf: asOf.toISOString(),
+              markets: marketState?.data ?? null,
+              calendar: marketCalendar?.data ?? null,
+            });
+      const freshness =
+        orderBook === null
+          ? freshnessFromSource(ticker.source, asOf)
+          : freshnessFromSource(orderBook.source, asOf);
+      const warnings: string[] = [];
+      if (ticker.lastPrice === null) warnings.push('Current ticker price is unavailable.');
+      if (orderBook === null) warnings.push('Current order-book data is unavailable.');
+      if (move.status === 'unavailable') {
+        warnings.push(`Native-close move is unavailable: ${move.reason}.`);
+      }
+      if (eventContext === null) warnings.push('Event evidence storage is unavailable.');
+      if (freshness.state !== 'fresh') {
+        warnings.push(`Market data is ${freshness.state}: ${freshness.reason}`);
+      }
+      return toProductInstrumentListItem({
+        instrument,
+        lastPrice: ticker.lastPrice,
+        bid: metrics?.bestBid ?? ticker.bidPrice,
+        ask: metrics?.bestAsk ?? ticker.askPrice,
+        spreadBps: metrics?.spreadBps ?? null,
+        sessionStatus: session.status,
+        moveSinceNativeClosePercent: move.percentageMove,
+        eventContextStatus: eventContext?.status ?? 'unavailable',
+        liquidityStatus: metrics?.condition.label ?? 'unavailable',
+        freshness,
+        warnings,
+      });
+    }),
+  );
+  const sourceRefs = [
+    toProductSourceReference(universe.source),
+    ...(tickers === null ? [] : [toProductSourceReference(tickers.source)]),
+    ...(marketState === null ? [] : [toProductSourceReference(marketState.source)]),
+    ...(marketCalendar === null ? [] : [toProductSourceReference(marketCalendar.source)]),
+  ];
+  const warnings = [
+    ...(tickers === null
+      ? ['Ticker collection was unavailable; list metrics may be incomplete.']
+      : []),
+    ...(marketState === null || marketCalendar === null
+      ? ['Session status is unavailable because the provider market schedule is incomplete.']
+      : []),
+    ...(listItems.length === 0
+      ? ['No mapped online Reality instruments with current tickers were available.']
+      : []),
+  ];
+  const freshness = freshnessFromSource(universe.source, asOf);
+  const data = { instruments: listItems, executionCapabilities: EXECUTION_CAPABILITIES };
+  runtime.instrumentListCache = {
+    expiresAtMs: currentTimeMs + INSTRUMENT_LIST_CACHE_TTL_MS,
+    data,
+    sourceRefs,
+    warnings,
+    asOf: asOf.toISOString(),
+    freshness,
+  };
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: asOf.toISOString(),
+    freshness,
+    data,
+    sourceRefs,
+    warnings,
+  });
+}
+
 async function sendContext(
   response: ServerResponse,
   options: ApiServerOptions,
   snapshots: MarketSnapshotStore,
   now: () => Date,
   symbol: string,
+  runtime: ApiRuntime,
 ): Promise<void> {
+  const cacheEntry = runtime.contextCache.get(symbol);
+  const currentTimeMs = now().getTime();
+  if (cacheEntry !== undefined && cacheEntry.cachedAtMs + CONTEXT_CACHE_TTL_MS > currentTimeMs) {
+    const cachedData = toProductContext(cacheEntry.context);
+    sendEnvelope(response, {
+      mode: 'LIVE',
+      asOf: cacheEntry.context.asOf,
+      freshness: contextFreshness(cacheEntry.context),
+      data: cachedData,
+      sourceRefs: cacheEntry.context.sourceRefs.map((source) => toProductSourceReference(source)),
+      warnings: cacheEntry.context.warnings,
+    });
+    return;
+  }
   const universe = await options.marketData.discoverRealityInstruments();
   const instrument = universe.data.find((item) => item.providerSymbol === symbol);
   if (!instrument) {
@@ -361,12 +613,13 @@ async function sendContext(
     ...(store === undefined ? { eventSourceAvailable: false } : {}),
     ...(options.qualityConfig === undefined ? {} : { qualityConfig: options.qualityConfig }),
   });
+  runtime.contextCache.set(symbol, { context: session, cachedAtMs: currentTimeMs });
   sendEnvelope(response, {
     mode: 'LIVE',
     asOf: session.asOf,
     freshness: contextFreshness(session),
-    data: session,
-    sourceRefs: session.sourceRefs,
+    data: toProductContext(session),
+    sourceRefs: session.sourceRefs.map((source) => toProductSourceReference(source)),
     warnings: session.warnings,
   });
 }
@@ -588,11 +841,25 @@ async function sendInstrumentEvents(
   const store = options.eventStore ?? options.replayStore;
   if (store === undefined) {
     const checkedAt = now().toISOString();
+    const eventContext = deriveUnifiedEventContext({
+      providerSymbol: symbol,
+      events: [],
+      analyses: [],
+      contextAsOf: checkedAt,
+      markets: null,
+      calendar: null,
+      eventSourceAvailable: false,
+    });
     sendEnvelope(response, {
       mode: 'LIVE',
       asOf: checkedAt,
       freshness: unavailableFreshness('event storage is not configured'),
-      data: { events: [], analyses: [], eventContext: uncheckedEventContext(checkedAt) },
+      data: {
+        events: [],
+        analyses: [],
+        eventContext: toProductEventContext(eventContext),
+        sources: [],
+      },
       sourceRefs: [],
       warnings: ['No persisted event source is configured.'],
     });
@@ -615,21 +882,31 @@ async function sendInstrumentEvents(
     void error;
   }
   const asOf = now();
-  const eventContext = deriveEventContext({
+  const eventContext = deriveUnifiedEventContext({
+    providerSymbol: symbol,
     events,
     analyses,
     contextAsOf: asOf.toISOString(),
     markets,
     calendar,
-    checkedAt: asOf.toISOString(),
   });
+  const latestAnalysisByEvent = new Map<string, (typeof analyses)[number]>();
+  for (const analysis of analyses) latestAnalysisByEvent.set(analysis.eventId, analysis);
+  const productEvents = events.map((event) =>
+    toProductEvent(event, latestAnalysisByEvent.get(event.eventId) ?? null),
+  );
   sendEnvelope(response, {
     mode: 'LIVE',
     asOf: asOf.toISOString(),
     freshness: unavailableFreshness(
       'event records use source availability and analysis timestamps',
     ),
-    data: { events, analyses, eventContext },
+    data: {
+      events: productEvents,
+      analyses: analyses.map((analysis) => toProductEventAnalysis(analysis)),
+      eventContext: toProductEventContext(eventContext),
+      sources: productEvents.map((event) => event.source),
+    },
     sourceRefs: [],
     warnings: eventContext.reasons,
   });
@@ -652,15 +929,22 @@ async function sendEvent(
     return;
   }
   const analyses = await store.listEventAnalyses(eventId);
+  const latestAnalysis = analyses.at(-1) ?? null;
+  const productEvent = toProductEvent(event, latestAnalysis);
   sendEnvelope(response, {
     mode: 'LIVE',
     asOf: event.sourceAvailableAt,
     freshness: unavailableFreshness(
       'event freshness is represented by sourceAvailableAt and retrievedAt',
     ),
-    data: { event, latestAnalysis: analyses.at(-1) ?? null },
+    data: {
+      event: productEvent,
+      analysis: latestAnalysis === null ? null : toProductEventAnalysis(latestAnalysis),
+      latestAnalysis: latestAnalysis === null ? null : toProductEventAnalysis(latestAnalysis),
+      sources: [productEvent.source],
+    },
     sourceRefs: [],
-    warnings: analyses.length === 0 ? ['Analysis is pending for this source event.'] : [],
+    warnings: latestAnalysis === null ? ['Analysis is pending for this source event.'] : [],
   });
 }
 
@@ -682,13 +966,19 @@ async function sendEventAnalysis(
   }
   const analyses = await store.listEventAnalyses(eventId);
   const analysis = analyses.at(-1) ?? null;
+  const productEvent = toProductEvent(event, analysis);
   sendEnvelope(response, {
     mode: 'LIVE',
     asOf: analysis?.processedAt ?? event.retrievedAt,
     freshness: unavailableFreshness(
       'analysis processing time is distinct from source availability',
     ),
-    data: { event, analysis, status: analysis?.status ?? 'pending' },
+    data: {
+      event: productEvent,
+      analysis: analysis === null ? null : toProductEventAnalysis(analysis),
+      status: analysis?.status ?? 'pending',
+      sources: [productEvent.source],
+    },
     sourceRefs: [],
     warnings: analysis === null ? ['Analysis is pending for this source event.'] : [],
   });
@@ -739,18 +1029,55 @@ async function sendSimulation(
     return;
   }
   const input: ExecutionSimulationRequest = parsed.data;
-  const snapshot = snapshots.getOrderBook(input.snapshotId);
-  if (!snapshot) {
+  if (!isPositiveDecimal(input.requestedQuantity)) {
+    sendError(
+      response,
+      now(),
+      'simulation_invalid_quantity',
+      'quantity must be a positive decimal string',
+      400,
+    );
+    return;
+  }
+  let snapshot = input.snapshotId === undefined ? null : snapshots.getOrderBook(input.snapshotId);
+  let currentPrice: string | null = null;
+  let orderBookSource: SourceMetadata | null = null;
+  let tickerSource: SourceMetadata | null = null;
+  if (input.snapshotId !== undefined && snapshot === null) {
     sendError(response, now(), 'SNAPSHOT_NOT_FOUND', 'snapshot ID was not found', 404);
     return;
   }
-  if (snapshot.providerSymbol !== input.symbol) {
+  if (snapshot !== null && snapshot.providerSymbol !== input.symbol) {
     sendError(
       response,
       now(),
       'INVALID_REQUEST',
       'snapshot symbol does not match requested symbol',
       400,
+    );
+    return;
+  }
+  if (snapshot === null) {
+    try {
+      const result = await options.marketData.getOrderBook(input.symbol);
+      snapshot = snapshots.saveOrderBook(result.data);
+      orderBookSource = result.source;
+    } catch (error) {
+      const mapped = mapProductMarketError(error, 'simulation_book_unavailable');
+      sendError(response, now(), mapped.code, mapped.message, mapped.status);
+      return;
+    }
+    const ticker = await safeProviderCall(() => options.marketData.getTicker(input.symbol));
+    currentPrice = ticker?.data.lastPrice ?? null;
+    tickerSource = ticker?.source ?? null;
+  }
+  if (snapshot === null) {
+    sendError(
+      response,
+      now(),
+      'simulation_book_unavailable',
+      'order-book snapshot is unavailable',
+      503,
     );
     return;
   }
@@ -765,26 +1092,40 @@ async function sendSimulation(
     ...(options.qualityConfig === undefined ? {} : { config: options.qualityConfig }),
   });
   const freshness = simulation.freshness;
+  const sources = [
+    toProductSourceReference(snapshot.source),
+    ...(tickerSource === null ? [] : [toProductSourceReference(tickerSource)]),
+  ];
+  const data = toProductSimulation({ simulation, currentPrice, sources });
   sendEnvelope(response, {
     mode: 'LIVE',
-    asOf: simulation.snapshotTimestamp ?? simulation.receivedTimestamp,
+    asOf: data.bookAsOf ?? data.receivedAt,
     freshness,
-    data: simulation,
-    sourceRefs: [toSourceReference(snapshot.source, input.symbol, snapshot.snapshotId)],
-    warnings: freshnessWarnings(freshness),
+    data,
+    sourceRefs: [
+      toProductSourceReference(orderBookSource ?? snapshot.source),
+      ...(tickerSource === null ? [] : [toProductSourceReference(tickerSource)]),
+    ],
+    warnings: [
+      ...freshnessWarnings(freshness),
+      ...(currentPrice === null
+        ? ['Current ticker price was unavailable for this simulation.']
+        : []),
+    ],
   });
 }
 
 async function sendReplayList(
   response: ServerResponse,
   replayEngine: ReplayEngine | null,
+  eventReplayEngine: EventReplayEngine | null,
   now: () => Date,
 ): Promise<void> {
-  if (replayEngine === null) {
+  if (replayEngine === null && eventReplayEngine === null) {
     sendError(
       response,
       now(),
-      'REPLAY_UNAVAILABLE',
+      'replay_unavailable',
       'replay storage is not configured',
       503,
       [],
@@ -792,43 +1133,53 @@ async function sendReplayList(
     );
     return;
   }
-  const cases = await replayEngine.listCases();
-  const latest = cases.at(-1);
-  const asOf = latest?.manifest.replayAsOf ?? '1970-01-01T00:00:00.000Z';
-  const freshness = latest
-    ? {
-        state: 'fresh' as const,
-        reason: 'replay case metadata is available',
-        ageMs: 0,
-        clockSkewMs: 0,
-        timestampConflict: false,
-        providerTimestamp: null,
-        receivedAt: asOf,
-      }
-    : unavailableFreshness('no replay cases are available');
+  const marketCases = replayEngine === null ? [] : await replayEngine.listCases();
+  const eventCases = eventReplayEngine === null ? [] : await eventReplayEngine.listCases();
+  const cases = curateReplayCases([...marketCases, ...eventCases]);
+  const summaries = cases.map((replayCase) => toProductReplaySummary(replayCase));
+  const latest = summaries.at(-1);
+  const asOf = latest?.asOf ?? '1970-01-01T00:00:00.000Z';
+  const freshness =
+    summaries.length > 0
+      ? {
+          state: 'fresh' as const,
+          reason: 'replay case metadata is available',
+          ageMs: 0,
+          clockSkewMs: 0,
+          timestampConflict: false,
+          providerTimestamp: null,
+          receivedAt: asOf,
+        }
+      : unavailableFreshness('no replay cases are available');
   sendEnvelope(response, {
     mode: 'REPLAY',
     asOf,
     freshness,
-    data: cases,
+    data: {
+      replays: summaries,
+      executionCapabilities: EXECUTION_CAPABILITIES,
+    },
     sourceRefs: cases.flatMap((replayCase) =>
-      replayCase.manifest.sources.map((source) => toSourceReference(source, null, null)),
+      'sources' in replayCase.manifest
+        ? replayCase.manifest.sources.map((source) => toProductSourceReference(source))
+        : [],
     ),
-    warnings: cases.length === 0 ? ['No captured replay cases are available.'] : [],
+    warnings: summaries.length === 0 ? ['No curated replay cases are available.'] : [],
   });
 }
 
 async function sendReplayCase(
   response: ServerResponse,
   replayEngine: ReplayEngine | null,
+  eventReplayEngine: EventReplayEngine | null,
   now: () => Date,
   caseId: string,
 ): Promise<void> {
-  if (replayEngine === null) {
+  if (replayEngine === null && eventReplayEngine === null) {
     sendError(
       response,
       now(),
-      'REPLAY_UNAVAILABLE',
+      'replay_unavailable',
       'replay storage is not configured',
       503,
       [],
@@ -836,12 +1187,18 @@ async function sendReplayCase(
     );
     return;
   }
-  const replayCase = await replayEngine.getCase(caseId);
-  if (replayCase === null) {
+  const replayCase = replayEngine === null ? null : await replayEngine.getCase(caseId);
+  const eventReplayCase =
+    replayCase === null && eventReplayEngine !== null
+      ? await eventReplayEngine
+          .listCases()
+          .then((cases) => cases.find((item) => item.manifest.caseId === caseId) ?? null)
+      : null;
+  if (replayCase === null && eventReplayCase === null) {
     sendError(
       response,
       now(),
-      'REPLAY_CASE_NOT_FOUND',
+      'replay_not_found',
       `replay case ${caseId} was not found`,
       404,
       [],
@@ -849,9 +1206,21 @@ async function sendReplayCase(
     );
     return;
   }
-  const orderBookSource = replayCase.manifest.sources.find(
-    (source) => source.snapshotId === replayCase.manifest.orderBookSnapshotId,
-  );
+  const selectedCase = replayCase ?? eventReplayCase;
+  if (selectedCase === null) {
+    sendError(
+      response,
+      now(),
+      'replay_not_found',
+      `replay case ${caseId} was not found`,
+      404,
+      [],
+      'REPLAY',
+    );
+    return;
+  }
+  const orderBookSource =
+    'sources' in selectedCase.manifest ? findOrderBookSource(selectedCase.manifest) : undefined;
   const freshness = orderBookSource
     ? freshnessFromSource(
         {
@@ -864,15 +1233,30 @@ async function sendReplayCase(
           rawResponseHash: orderBookSource.rawResponseHash,
           httpStatus: 200,
         },
-        new Date(replayCase.manifest.replayAsOf),
+        new Date(selectedCase.manifest.replayAsOf),
       )
-    : unavailableFreshness('replay order-book source is missing');
+    : localFreshness(selectedCase.manifest.replayAsOf, 'replay case metadata is immutable');
+  const detail = toProductReplayDetail(
+    selectedCase,
+    replayCase === null
+      ? ['This event-only replay has no captured market or order-book snapshot.']
+      : [
+          'Replay uses immutable captured provider responses and makes no external provider calls.',
+          'Any simulation is an observed-book estimate, not a guaranteed fill.',
+        ],
+  );
   sendEnvelope(response, {
     mode: 'REPLAY',
-    asOf: replayCase.manifest.replayAsOf,
+    asOf: selectedCase.manifest.replayAsOf,
     freshness,
-    data: replayCase,
-    sourceRefs: replayCase.manifest.sources.map((source) => toSourceReference(source, null, null)),
+    data: {
+      ...detail,
+      manifest: { manifestHash: selectedCase.manifest.manifestHash },
+    },
+    sourceRefs:
+      'sources' in selectedCase.manifest
+        ? selectedCase.manifest.sources.map((source) => toProductSourceReference(source))
+        : [],
     warnings: freshnessWarnings(freshness),
   });
 }
@@ -899,7 +1283,7 @@ async function sendReplayContext(
     sendError(
       response,
       now(),
-      'REPLAY_CASE_NOT_FOUND',
+      'replay_not_found',
       `replay case ${caseId} was not found`,
       404,
       [],
@@ -911,8 +1295,8 @@ async function sendReplayContext(
     mode: 'REPLAY',
     asOf: context.asOf,
     freshness: contextFreshness(context),
-    data: context,
-    sourceRefs: context.sourceRefs,
+    data: toProductContext(context),
+    sourceRefs: context.sourceRefs.map((source) => toProductSourceReference(source)),
     warnings: context.warnings,
   });
 }
@@ -928,7 +1312,7 @@ async function sendReplaySimulation(
     sendError(
       response,
       now(),
-      'REPLAY_UNAVAILABLE',
+      'replay_unavailable',
       'replay storage is not configured',
       503,
       [],
@@ -957,12 +1341,26 @@ async function sendReplaySimulation(
     return;
   }
   const result = await replayEngine.simulate(caseId, parsed.data);
+  const simulation = toProductSimulation({
+    simulation: result.data.simulation,
+    currentPrice: result.data.marketSnapshot.lastPrice,
+    sources: result.sourceRefs.map((source) => toProductSourceReference(source)),
+  });
   sendEnvelope(response, {
     mode: 'REPLAY',
     asOf: result.asOf,
     freshness: result.freshness,
-    data: result,
-    sourceRefs: result.sourceRefs,
+    data: {
+      mode: result.mode,
+      asOf: result.asOf,
+      caseId: result.caseId,
+      simulation,
+      data: { simulation },
+      warnings: result.warnings,
+      limitations: result.limitations,
+      sources: result.sourceRefs.map((source) => toProductSourceReference(source)),
+    },
+    sourceRefs: result.sourceRefs.map((source) => toProductSourceReference(source)),
     warnings: result.warnings,
   });
 }
@@ -1143,11 +1541,89 @@ function formatZodError(error: ZodError): string {
     .join('; ');
 }
 
-function safeMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
+async function safeStoreCall<T extends unknown[]>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    void error;
+    return [] as unknown as T;
   }
-  return String(error);
+}
+
+function compareInformationalDecimal(left: string | null, right: string | null): number {
+  return decimalOrZero(right).comparedTo(decimalOrZero(left));
+}
+
+function decimalOrZero(value: string | null): Decimal {
+  if (value === null) return new Decimal(0);
+  try {
+    const parsed = new Decimal(value);
+    return parsed.isFinite() ? parsed : new Decimal(0);
+  } catch {
+    return new Decimal(0);
+  }
+}
+
+function isPositiveDecimal(value: string): boolean {
+  try {
+    const parsed = new Decimal(value);
+    return parsed.isFinite() && parsed.gt(0);
+  } catch {
+    return false;
+  }
+}
+
+function mapProductMarketError(
+  error: unknown,
+  fallback: 'market_data_unavailable' | 'simulation_book_unavailable',
+): { code: ApiErrorCode; message: string; status: number } {
+  const category = classifyThrownError(error);
+  if (category === 'instrument_missing') {
+    return { code: 'instrument_not_found', message: 'instrument was not found', status: 404 };
+  }
+  if (category === 'rate_limited') {
+    return { code: fallback, message: 'market data rate limit reached', status: 429 };
+  }
+  return {
+    code: fallback,
+    message:
+      fallback === 'simulation_book_unavailable'
+        ? 'order-book data is unavailable for this simulation'
+        : 'market data is unavailable',
+    status: 503,
+  };
+}
+
+function curateReplayCases(
+  cases: Array<ReplayCase | EventReplayCase>,
+): Array<ReplayCase | EventReplayCase> {
+  const byCaseId = new Map<string, ReplayCase | EventReplayCase>();
+  for (const replayCase of cases) {
+    const existing = byCaseId.get(replayCase.manifest.caseId);
+    if (existing === undefined || 'marketSnapshotId' in replayCase.manifest) {
+      byCaseId.set(replayCase.manifest.caseId, replayCase);
+    }
+  }
+  const ordered = [...byCaseId.values()].sort((left, right) =>
+    left.manifest.replayAsOf.localeCompare(right.manifest.replayAsOf),
+  );
+  const selected: Array<ReplayCase | EventReplayCase> = [];
+  const selectedKinds = new Set<string>();
+  for (const replayCase of ordered) {
+    const summary = toProductReplaySummary(replayCase);
+    const key = `${summary.symbol}:${summary.hasEvent}:${summary.hasOrderBook}`;
+    if (selectedKinds.has(key)) continue;
+    selectedKinds.add(key);
+    selected.push(replayCase);
+    if (selected.length === 4) return selected;
+  }
+  return selected;
+}
+
+function findOrderBookSource(
+  manifest: Extract<ReplayCase['manifest'], { sources: ReplaySourceReference[] }>,
+): ReplaySourceReference | undefined {
+  return manifest.sources.find((source) => source.snapshotId === manifest.orderBookSnapshotId);
 }
 
 function mapError(error: unknown): {
@@ -1166,34 +1642,58 @@ function mapError(error: unknown): {
   }
   if (error instanceof ReplayError) {
     if (error.code === 'replay_case_not_found') {
-      return { code: 'REPLAY_CASE_NOT_FOUND', message: error.message, status: 404 };
+      return { code: 'replay_not_found', message: 'replay case was not found', status: 404 };
     }
     if (error.code === 'replay_snapshot_not_found') {
-      return { code: 'REPLAY_SNAPSHOT_NOT_FOUND', message: error.message, status: 422 };
+      return {
+        code: 'replay_unavailable',
+        message: 'replay evidence is incomplete',
+        status: 422,
+      };
     }
-    return { code: 'REPLAY_MANIFEST_INVALID', message: error.message, status: 422 };
+    return { code: 'replay_unavailable', message: 'replay manifest is invalid', status: 422 };
   }
   const status = classifyThrownError(error);
-  const message = safeMessage(error);
   switch (status) {
     case 'authentication_invalid':
-      return { code: 'PROVIDER_AUTHENTICATION_INVALID', message, status: 502 };
+      return {
+        code: 'market_data_unavailable',
+        message: 'market data authentication is unavailable',
+        status: 503,
+      };
     case 'rate_limited':
-      return { code: 'PROVIDER_RATE_LIMITED', message, status: 429 };
+      return {
+        code: 'market_data_unavailable',
+        message: 'market data rate limit reached',
+        status: 429,
+      };
     case 'malformed_provider_data':
-      return { code: 'PROVIDER_MALFORMED', message, status: 502 };
+      return {
+        code: 'market_data_unavailable',
+        message: 'market data response could not be normalized',
+        status: 502,
+      };
     case 'instrument_missing':
-      return { code: 'INSTRUMENT_NOT_FOUND', message, status: 404 };
+      return { code: 'instrument_not_found', message: 'instrument was not found', status: 404 };
     case 'provider_rejected':
     case 'whitelist_denied':
-      return { code: 'PROVIDER_REJECTED', message, status: 502 };
+      return {
+        code: 'market_data_unavailable',
+        message: 'market data request was rejected',
+        status: 502,
+      };
     case 'request_timeout':
     case 'environment_unreachable':
-      return { code: 'PROVIDER_UNAVAILABLE', message, status: 503 };
+      return {
+        code: 'market_data_unavailable',
+        message: 'market data provider is unavailable',
+        status: 503,
+      };
     default:
       return {
-        code: error instanceof ProbeError ? 'INTERNAL_ERROR' : 'INTERNAL_ERROR',
-        message,
+        code: error instanceof ProbeError ? 'market_data_unavailable' : 'INTERNAL_ERROR',
+        message:
+          error instanceof ProbeError ? 'market data request failed' : 'internal server error',
         status: 500,
       };
   }

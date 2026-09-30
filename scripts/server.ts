@@ -10,11 +10,15 @@ loadLocalEnv();
 
 const port = Number(process.env.PORT ?? 3000);
 const dataDirectory = process.env.AFTERMRKT_DATA_DIR ?? join(process.cwd(), '.agent', 'data');
+const eventReplayDataDirectory = process.env.AFTERMRKT_EVENT_REPLAY_DATA_DIR;
 const server = createApiServer({
   marketData: new BitgetPublicMarketDataAdapter(),
   snapshots: new InMemorySnapshotStore(),
   replayStore: new FileCaptureStore(dataDirectory),
   executionStore: new FileExecutionStore(dataDirectory),
+  ...(eventReplayDataDirectory === undefined
+    ? {}
+    : { eventReplayStore: new FileCaptureStore(eventReplayDataDirectory) }),
 });
 
 server.listen(port, '127.0.0.1', () => {

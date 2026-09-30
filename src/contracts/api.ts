@@ -1,20 +1,78 @@
 import { z } from 'zod';
 import { DecimalStringSchema } from '../domain/types.js';
 import type { Freshness, SourceReference } from '../domain/types.js';
+import type { ProductSourceReference } from '../api/product-contracts.js';
 
-export const ExecutionSimulationRequestSchema = z.object({
-  symbol: z.string().trim().min(1),
-  requestedQuantity: DecimalStringSchema,
-  snapshotId: z.string().regex(/^[a-f0-9]{64}$/),
-  maximumAcceptableSlippageBps: DecimalStringSchema.optional(),
-});
-
-export const ReplaySimulationRequestSchema = z
+const ExecutionSimulationInputSchema = z
   .object({
-    requestedQuantity: DecimalStringSchema,
+    symbol: z.string().trim().min(1),
+    quantity: DecimalStringSchema.optional(),
+    requestedQuantity: DecimalStringSchema.optional(),
+    snapshotId: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
     maximumAcceptableSlippageBps: DecimalStringSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.quantity === undefined && value.requestedQuantity === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['quantity'],
+        message: 'quantity is required',
+      });
+    }
+    if (value.quantity !== undefined && value.requestedQuantity !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['quantity'],
+        message: 'use quantity or requestedQuantity, not both',
+      });
+    }
+  });
+
+export const ExecutionSimulationRequestSchema = ExecutionSimulationInputSchema.transform(
+  (value) => ({
+    symbol: value.symbol,
+    requestedQuantity: value.quantity ?? value.requestedQuantity ?? '',
+    ...(value.snapshotId === undefined ? {} : { snapshotId: value.snapshotId }),
+    ...(value.maximumAcceptableSlippageBps === undefined
+      ? {}
+      : { maximumAcceptableSlippageBps: value.maximumAcceptableSlippageBps }),
+  }),
+);
+
+const ReplaySimulationInputSchema = z
+  .object({
+    quantity: DecimalStringSchema.optional(),
+    requestedQuantity: DecimalStringSchema.optional(),
+    maximumAcceptableSlippageBps: DecimalStringSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.quantity === undefined && value.requestedQuantity === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['quantity'],
+        message: 'quantity is required',
+      });
+    }
+    if (value.quantity !== undefined && value.requestedQuantity !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['quantity'],
+        message: 'use quantity or requestedQuantity, not both',
+      });
+    }
+  });
+
+export const ReplaySimulationRequestSchema = ReplaySimulationInputSchema.transform((value) => ({
+  requestedQuantity: value.quantity ?? value.requestedQuantity ?? '',
+  ...(value.maximumAcceptableSlippageBps === undefined
+    ? {}
+    : { maximumAcceptableSlippageBps: value.maximumAcceptableSlippageBps }),
+}));
 
 export const ManualPositionRequestSchema = z
   .object({
@@ -54,7 +112,7 @@ export type ApiEnvelope<T> = {
   asOf: string;
   freshness: Freshness;
   data: T;
-  sourceRefs: SourceReference[];
+  sourceRefs: Array<SourceReference | ProductSourceReference>;
   warnings: string[];
 };
 
@@ -73,6 +131,15 @@ export type ApiErrorCode =
   | 'REPLAY_SNAPSHOT_NOT_FOUND'
   | 'REPLAY_MANIFEST_INVALID'
   | 'REPLAY_UNAVAILABLE'
+  | 'instrument_not_found'
+  | 'market_data_unavailable'
+  | 'market_data_stale'
+  | 'session_unavailable'
+  | 'event_evidence_unavailable'
+  | 'simulation_invalid_quantity'
+  | 'simulation_book_unavailable'
+  | 'replay_not_found'
+  | 'replay_unavailable'
   | 'POSITION_NOT_FOUND'
   | 'INSTRUMENT_OFFLINE'
   | 'INVALID_SYMBOL'
