@@ -12,6 +12,23 @@ import {
 import type { SourceEvent } from '../../contracts/events.js';
 import { SecEdgarClient, type SecClientOptions, type SecRequestResult } from './client.js';
 
+export const DEFAULT_SEC_EXCERPT_MAX_CHARS = 3_600;
+const TARGET_8K_ITEMS = ['1.01', '2.02', '5.02', '7.01', '8.01'];
+
+export type SecEvidenceExtractionStatus = 'section-isolated' | 'document-bounded' | 'uncertain';
+
+export type SecFilingContent = {
+  contentHash: string;
+  contentResponseHash: string;
+  retrievedAt: string;
+  boundedExcerpt: string;
+  excerptStartOffset: number;
+  excerptEndOffset: number;
+  relevantItemIds: string[];
+  extractionStatus: SecEvidenceExtractionStatus;
+  sanitizedTextLength: number;
+};
+
 export type SecFiling = {
   ticker: string;
   cik: string;
@@ -22,16 +39,19 @@ export type SecFiling = {
   reportDate: string | null;
   acceptanceTimestamp: string | null;
   primaryDocument: string;
+  items: string[];
   sourceUrl: string;
   retrievedAt: string;
   rawContentHash: string;
   sourceResponseHash: string;
+  content: SecFilingContent | null;
 };
 
 export type SecEdgarProvider = {
   getTickerCik(ticker: string): Promise<{ ticker: string; cik: string; companyName: string }>;
   getRecentFilings(ticker: string, limit?: number): Promise<SecFiling[]>;
-  toSourceEvent(filing: SecFiling, providerSymbol: string): SourceEvent;
+  getFilingContent(filing: SecFiling): Promise<SecFilingContent>;
+  toSourceEvent(filing: SecFiling, providerSymbol: string, content?: SecFilingContent): SourceEvent;
 };
 
 export class SecEdgarAdapter implements SecEdgarProvider {
@@ -65,25 +85,58 @@ export class SecEdgarAdapter implements SecEdgarProvider {
     return selectFilings(recent, identity, result, limit);
   }
 
-  toSourceEvent(filing: SecFiling, providerSymbol: string): SourceEvent {
-    const sourceAvailableAt = filing.acceptanceTimestamp ?? filing.retrievedAt;
-    const excerpt = [
-      `SEC ${filing.form} filing for ${filing.ticker}.`,
-      `Filing date: ${filing.filingDate}.`,
-      `Accession number: ${filing.accessionNumber}.`,
-      filing.reportDate === null ? null : `Report date: ${filing.reportDate}.`,
-    ]
-      .filter((item): item is string => item !== null)
-      .join(' ');
+  async getFilingContent(filing: SecFiling): Promise<SecFilingContent> {
+    const sourceUrl = new URL(filing.sourceUrl);
+    const result = await this.client.getText(sourceUrl.pathname);
+    const sanitizedText = sanitizeFilingHtml(result.text);
+    if (sanitizedText.length === 0) {
+      throw new ProbeError('malformed_provider_data', 'SEC primary filing had no meaningful text');
+    }
+    const evidence = extractBoundedFilingEvidence(
+      sanitizedText,
+      filing.form,
+      filing.items,
+      DEFAULT_SEC_EXCERPT_MAX_CHARS,
+    );
+    const contentHash = hashRawResponse(result.text);
+    return {
+      contentHash,
+      contentResponseHash: contentHash,
+      retrievedAt: result.raw.receivedAt,
+      boundedExcerpt: evidence.boundedExcerpt,
+      excerptStartOffset: evidence.excerptStartOffset,
+      excerptEndOffset: evidence.excerptEndOffset,
+      relevantItemIds: evidence.relevantItemIds,
+      extractionStatus: evidence.extractionStatus,
+      sanitizedTextLength: sanitizedText.length,
+    };
+  }
+
+  toSourceEvent(filing: SecFiling, providerSymbol: string, content = filing.content): SourceEvent {
+    const sourceAvailableAt =
+      filing.acceptanceTimestamp ?? content?.retrievedAt ?? filing.retrievedAt;
+    const retrievedAt = content?.retrievedAt ?? filing.retrievedAt;
+    const excerpt = content?.boundedExcerpt ?? metadataExcerpt(filing);
+    const contentHash = content?.contentHash ?? null;
+    const rawContentHash = contentHash ?? filing.rawContentHash;
     const details = {
       cik: filing.cik,
+      companyName: filing.companyName,
       form: filing.form,
       filingDate: filing.filingDate,
       reportDate: filing.reportDate,
       acceptanceTimestamp: filing.acceptanceTimestamp,
       primaryDocument: filing.primaryDocument,
+      items: filing.items,
+      contentHash,
+      contentRetrievedAt: content?.retrievedAt ?? null,
+      contentResponseHash: content?.contentResponseHash ?? null,
+      excerptStartOffset: content?.excerptStartOffset ?? 0,
+      excerptEndOffset: content?.excerptEndOffset ?? excerpt.length,
+      relevantItemIds: content?.relevantItemIds ?? [],
+      extractionStatus: content?.extractionStatus ?? 'uncertain',
+      sanitizedTextLength: content?.sanitizedTextLength ?? excerpt.length,
     };
-    const rawContentHash = sha256(canonicalJson(details));
     const eventId = sha256(
       canonicalJson({
         sourceType: 'sec-edgar',
@@ -98,7 +151,7 @@ export class SecEdgarAdapter implements SecEdgarProvider {
       providerSymbol,
       nativeTicker: filing.ticker,
       sourceType: 'sec-edgar',
-      sourceName: 'SEC EDGAR submissions',
+      sourceName: content === null ? 'SEC EDGAR submissions' : 'SEC EDGAR primary filing document',
       sourceUrl: filing.sourceUrl,
       externalId: filing.accessionNumber,
       title: `${filing.form} filing for ${filing.ticker}`,
@@ -106,7 +159,7 @@ export class SecEdgarAdapter implements SecEdgarProvider {
       publishedAt: null,
       eventOccurredAt: null,
       sourceAvailableAt,
-      retrievedAt: filing.retrievedAt,
+      retrievedAt,
       category: 'sec_filing',
       rawContentHash,
       details,
@@ -128,6 +181,80 @@ export class SecEdgarAdapter implements SecEdgarProvider {
     );
     return this.tickerMap;
   }
+}
+
+type BoundedFilingEvidence = {
+  boundedExcerpt: string;
+  excerptStartOffset: number;
+  excerptEndOffset: number;
+  relevantItemIds: string[];
+  extractionStatus: SecEvidenceExtractionStatus;
+};
+
+export function sanitizeFilingHtml(input: string): string {
+  return input
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(script|style|noscript|template|svg|head)\b[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<\/?(br|p|div|li|tr|h[1-6]|table|section|article)\b[^>]*>/gi, '\n')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_match, value: string) => decodeNumericEntity(value))
+    .replace(/&#x([\da-f]+);/gi, (_match, value: string) => decodeNumericEntity(value, 16))
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter((line) => line.length > 0)
+    .join('\n');
+}
+
+export function extractBoundedFilingEvidence(
+  sanitizedText: string,
+  form: SecFiling['form'],
+  metadataItems: string[],
+  maxChars = DEFAULT_SEC_EXCERPT_MAX_CHARS,
+): BoundedFilingEvidence {
+  const normalizedMetadataItems = metadataItems.map(normalizeItemId).filter(isItemId);
+  const targetItems = new Set(
+    form === '8-K' && normalizedMetadataItems.length > 0
+      ? normalizedMetadataItems
+      : form === '8-K'
+        ? TARGET_8K_ITEMS
+        : [],
+  );
+  const headings = [...sanitizedText.matchAll(/\bItem\s+(\d+\.\d+)\b/gi)].map((match) => ({
+    itemId: normalizeItemId(match[1] ?? ''),
+    start: match.index ?? 0,
+  }));
+  const relevantHeading = headings.find((heading) => targetItems.has(heading.itemId));
+  if (relevantHeading !== undefined) {
+    const nextHeading = headings.find((heading) => heading.start > relevantHeading.start);
+    const sectionEnd = Math.min(
+      nextHeading?.start ?? sanitizedText.length,
+      relevantHeading.start + maxChars,
+    );
+    const bounds = trimBounds(sanitizedText, relevantHeading.start, sectionEnd);
+    return {
+      boundedExcerpt: sanitizedText.slice(bounds.start, bounds.end),
+      excerptStartOffset: bounds.start,
+      excerptEndOffset: bounds.end,
+      relevantItemIds: [relevantHeading.itemId],
+      extractionStatus: 'section-isolated',
+    };
+  }
+
+  const bounds = trimBounds(sanitizedText, 0, Math.min(sanitizedText.length, maxChars));
+  return {
+    boundedExcerpt: sanitizedText.slice(bounds.start, bounds.end),
+    excerptStartOffset: bounds.start,
+    excerptEndOffset: bounds.end,
+    relevantItemIds: normalizedMetadataItems,
+    extractionStatus: form === '8-K' ? 'uncertain' : 'document-bounded',
+  };
 }
 
 function selectFilings(
@@ -164,6 +291,7 @@ function selectFilings(
       reportDate: recent.reportDate[index] ?? null,
       acceptanceTimestamp: normalizeSecTimestamp(acceptance),
       primaryDocument,
+      items: parseItemIds(recent.items?.[index]),
       sourceUrl,
       retrievedAt: result.raw.receivedAt,
       rawContentHash: sha256(
@@ -177,9 +305,50 @@ function selectFilings(
         }),
       ),
       sourceResponseHash: hashRawResponse(result.raw.bodyText),
+      content: null,
     });
   }
   return filings;
+}
+
+function metadataExcerpt(filing: SecFiling): string {
+  return [
+    `SEC ${filing.form} filing for ${filing.ticker}.`,
+    `Filing date: ${filing.filingDate}.`,
+    `Accession number: ${filing.accessionNumber}.`,
+    filing.reportDate === null ? null : `Report date: ${filing.reportDate}.`,
+  ]
+    .filter((item): item is string => item !== null)
+    .join(' ');
+}
+
+function parseItemIds(value: string | undefined): string[] {
+  if (value === undefined) return [];
+  return [...value.matchAll(/\d+\.\d+/g)].map((match) => normalizeItemId(match[0] ?? ''));
+}
+
+function normalizeItemId(value: string): string {
+  return value
+    .trim()
+    .replace(/^Item\s+/i, '')
+    .replace(/\.$/, '');
+}
+
+function isItemId(value: string): value is `${number}.${number}` {
+  return /^\d+\.\d+$/.test(value);
+}
+
+function trimBounds(text: string, start: number, end: number): { start: number; end: number } {
+  let boundedStart = start;
+  let boundedEnd = end;
+  while (boundedStart < boundedEnd && /\s/.test(text[boundedStart] ?? '')) boundedStart += 1;
+  while (boundedEnd > boundedStart && /\s/.test(text[boundedEnd - 1] ?? '')) boundedEnd -= 1;
+  return { start: boundedStart, end: boundedEnd };
+}
+
+function decodeNumericEntity(value: string, radix = 10): string {
+  const codePoint = Number.parseInt(value, radix);
+  return Number.isSafeInteger(codePoint) ? String.fromCodePoint(codePoint) : ' ';
 }
 
 function normalizeTicker(ticker: string): string {
@@ -205,4 +374,4 @@ function formatZodError(error: z.ZodError): string {
 }
 
 export { SecEdgarClient } from './client.js';
-export type { SecClientOptions, SecRequestResult } from './client.js';
+export type { SecClientOptions, SecRequestResult, SecTextRequestResult } from './client.js';

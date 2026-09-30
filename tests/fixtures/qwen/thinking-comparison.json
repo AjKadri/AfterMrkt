@@ -1,0 +1,31 @@
+{
+  "fixtureType": "redacted-qwen-thinking-comparison",
+  "fixtureStatus": "authenticated-capability-probe",
+  "provider": "bitget-hackathon-qwen",
+  "requestedModel": "qwen3.8-max",
+  "timeoutMs": 60000,
+  "responseFormat": "strict-json-schema",
+  "redaction": {
+    "apiKey": "omitted",
+    "prompt": "omitted",
+    "sourceText": "omitted",
+    "rawResponse": "omitted"
+  },
+  "providerDefault": {
+    "thinkingMode": "provider-default",
+    "status": "request_timeout"
+  },
+  "disabled": {
+    "thinkingMode": "disabled",
+    "status": "completed",
+    "providerReportedModel": "qwen3.8-max",
+    "latencyMs": 5992.430042,
+    "schemaValid": true,
+    "inputTokens": 303,
+    "reasoningTokens": null,
+    "outputTokens": 132,
+    "totalTokens": 435,
+    "cachedTokens": 0,
+    "providerReportedCostUsd": null
+  }
+}

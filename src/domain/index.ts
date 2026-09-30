@@ -25,7 +25,13 @@ export {
   deriveHistoricalBaseline,
   observationFromMarket,
 } from './baselines.js';
-export { createReplayCase, ReplayEngine, ReplayError } from './replay.js';
+export {
+  createEventReplayCase,
+  createReplayCase,
+  EventReplayEngine,
+  ReplayEngine,
+  ReplayError,
+} from './replay.js';
 export {
   EventAnalysisService,
   buildEvidencePacket,
@@ -44,13 +50,19 @@ export {
   uncheckedEventContext,
 } from './event-context.js';
 export type { EventContext, EventContextLabel } from './event-context.js';
-export { evaluatePostCloseWindow, resolveRegularSessionClose } from './event-window.js';
+export {
+  evaluatePostCloseWindow,
+  resolveNextRegularSessionOpen,
+  resolveRegularSessionClose,
+} from './event-window.js';
 export type { EventWindowResult, EventWindowStatus } from './event-window.js';
 export type { BaselineConfig, HistoricalObservation } from './baselines.js';
 export type {
   ReplayManifestInput,
   ReplaySimulationInput,
   ReplaySimulationResult,
+  EventReplayManifestInput,
+  EventReplayResult,
 } from './replay.js';
 export type {
   Freshness,

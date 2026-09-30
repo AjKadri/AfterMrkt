@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { deriveHistoricalBaseline } from '../src/domain/baselines.js';
-import { createReplayCase, ReplayEngine, ReplayError } from '../src/domain/replay.js';
+import {
+  createEventReplayCase,
+  createReplayCase,
+  EventReplayEngine,
+  ReplayEngine,
+  ReplayError,
+} from '../src/domain/replay.js';
 import { canonicalJson } from '../src/lib/canonical.js';
 import { sha256 } from '../src/lib/hash.js';
 import { InMemoryCaptureStore, FileCaptureStore } from '../src/persistence/store.js';
@@ -188,6 +194,31 @@ describe('capture persistence and replay', () => {
       sha256('analysis-past-event'),
     ]);
   });
+
+  it('supports historical event-only replay without fabricating market snapshots', async () => {
+    const store = new InMemoryCaptureStore();
+    const pastEvent = testEvent('historical-past', '2026-08-26T20:21:19.000Z');
+    const futureEvent = testEvent('historical-future', '2026-08-26T21:21:19.000Z');
+    await store.saveSourceEvent(pastEvent);
+    await store.saveSourceEvent(futureEvent);
+    await store.saveEventAnalysis(testAnalysis(pastEvent.eventId, '2026-09-30T00:00:00.000Z'));
+    const replayCase = await store.saveEventReplayCase(
+      createEventReplayCase({
+        providerSymbol: 'RMUUSDT',
+        nativeTicker: 'MU',
+        replayAsOf: '2026-08-26T20:51:19.000Z',
+        sourceEvents: [pastEvent, futureEvent],
+        manifestCreatedAt: '2026-09-30T00:00:00.000Z',
+      }),
+    );
+    const result = await new EventReplayEngine(store).simulate(replayCase.manifest.caseId);
+    expect(result.data.events.map((event) => event.externalId)).toEqual(['historical-past']);
+    expect(result.data.analyses).toHaveLength(0);
+    expect(result.data.laterAnalyses.map((analysis) => analysis.analysisId)).toEqual([
+      sha256('analysis-past-event'),
+    ]);
+    expect(result.limitations[1]).toContain('no fabricated historical market snapshots');
+  });
 });
 
 describe('historical baseline structures', () => {
@@ -246,6 +277,7 @@ function testAnalysis(eventId: string, processedAt: string): EventAnalysis {
     eventId,
     model: 'qwen3.8-max',
     providerReportedModel: 'qwen3.8-max',
+    thinkingMode: 'disabled',
     promptVersion: 'event-evidence-v2',
     schemaVersion: 'event-analysis-v2',
     eventType: 'earnings',
@@ -258,6 +290,7 @@ function testAnalysis(eventId: string, processedAt: string): EventAnalysis {
     confidence: 0.5,
     sourceBound: true,
     inputTokens: 1,
+    reasoningTokens: 0,
     outputTokens: 1,
     totalTokens: 2,
     cacheTokens: 0,

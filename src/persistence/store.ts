@@ -12,6 +12,7 @@ import type {
   MarketSnapshotInput,
   MarketStateSnapshot,
   MarketStateSnapshotInput,
+  EventReplayCase,
   PersistedInstrument,
   ReplayCase,
   ReplayOutcomeReference,
@@ -23,6 +24,7 @@ export class InMemoryCaptureStore implements CaptureStore {
   private readonly orderBooks = new Map<string, OrderBookSnapshot>();
   private readonly marketStates = new Map<string, MarketStateSnapshot>();
   private readonly replayCases = new Map<string, ReplayCase>();
+  private readonly eventReplayCases = new Map<string, EventReplayCase>();
   private readonly replayOutcomes = new Map<string, ReplayOutcomeReference>();
   private readonly collectionErrors = new Map<string, CollectionErrorRecord>();
   private readonly sourceEvents = new Map<string, SourceEvent>();
@@ -93,6 +95,29 @@ export class InMemoryCaptureStore implements CaptureStore {
 
   async listReplayCases(): Promise<ReplayCase[]> {
     return [...this.replayCases.values()].sort((left, right) =>
+      left.manifest.replayAsOf.localeCompare(right.manifest.replayAsOf),
+    );
+  }
+
+  async saveEventReplayCase(replayCase: EventReplayCase): Promise<EventReplayCase> {
+    const existing = this.eventReplayCases.get(replayCase.manifest.caseId);
+    if (existing !== undefined) {
+      if (canonicalJson(existing) !== canonicalJson(replayCase)) {
+        throw new Error(`immutable event replay case conflict at ${replayCase.manifest.caseId}`);
+      }
+      return existing;
+    }
+    const stored = deepFreeze(replayCase);
+    this.eventReplayCases.set(replayCase.manifest.caseId, stored);
+    return stored;
+  }
+
+  async getEventReplayCase(caseId: string): Promise<EventReplayCase | null> {
+    return this.eventReplayCases.get(caseId) ?? null;
+  }
+
+  async listEventReplayCases(): Promise<EventReplayCase[]> {
+    return [...this.eventReplayCases.values()].sort((left, right) =>
       left.manifest.replayAsOf.localeCompare(right.manifest.replayAsOf),
     );
   }
@@ -251,6 +276,23 @@ export class FileCaptureStore implements CaptureStore {
     return cases
       .filter((replayCase): replayCase is ReplayCase => replayCase !== null)
       .sort((left, right) => left.manifest.replayAsOf.localeCompare(right.manifest.replayAsOf));
+  }
+
+  async saveEventReplayCase(replayCase: EventReplayCase): Promise<EventReplayCase> {
+    const path = this.path('event-replay-cases', `${replayCase.manifest.caseId}.json`);
+    const existing = await writeImmutable(path, replayCase);
+    return deepFreeze((existing as EventReplayCase | null) ?? replayCase);
+  }
+
+  async getEventReplayCase(caseId: string): Promise<EventReplayCase | null> {
+    return readStored<EventReplayCase>(this.path('event-replay-cases', `${caseId}.json`));
+  }
+
+  async listEventReplayCases(): Promise<EventReplayCase[]> {
+    const cases = await readDirectoryRecords<EventReplayCase>(this.path('event-replay-cases'));
+    return cases.sort((left, right) =>
+      left.manifest.replayAsOf.localeCompare(right.manifest.replayAsOf),
+    );
   }
 
   async saveReplayOutcome(outcome: ReplayOutcomeReference): Promise<ReplayOutcomeReference> {

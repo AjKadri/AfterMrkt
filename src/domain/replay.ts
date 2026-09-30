@@ -13,6 +13,8 @@ import { freshnessFromSource } from './freshness.js';
 import type { SourceMetadata, SourceReference } from './types.js';
 import type {
   CaptureStore,
+  EventReplayCase,
+  EventReplayManifest,
   MarketSnapshot,
   MarketStateSnapshot,
   ReplayCase,
@@ -57,6 +59,30 @@ export type ReplaySimulationResult = {
     laterAnalyses: EventAnalysis[];
   };
   sourceRefs: SourceReference[];
+  warnings: string[];
+  limitations: string[];
+};
+
+export type EventReplayManifestInput = {
+  providerSymbol: string;
+  nativeTicker: string | null;
+  replayAsOf: string;
+  sourceEvents: SourceEvent[];
+  manifestCreatedAt: string;
+};
+
+export type EventReplayResult = {
+  mode: 'REPLAY';
+  asOf: string;
+  caseId: string;
+  manifestHash: string;
+  data: {
+    providerSymbol: string;
+    nativeTicker: string | null;
+    events: SourceEvent[];
+    analyses: EventAnalysis[];
+    laterAnalyses: EventAnalysis[];
+  };
   warnings: string[];
   limitations: string[];
 };
@@ -109,6 +135,91 @@ export function createReplayCase(input: ReplayManifestInput): ReplayCase {
     manifestHash: sha256(canonicalJson(withoutHash)),
   };
   return { manifest };
+}
+
+export function createEventReplayCase(input: EventReplayManifestInput): EventReplayCase {
+  const replayMs = Date.parse(input.replayAsOf);
+  if (!Number.isFinite(replayMs)) {
+    throw new ReplayError('replay_manifest_invalid', 'replayAsOf is not a valid timestamp');
+  }
+  const eventIds = qualifyingEventIds(input.sourceEvents, input.replayAsOf);
+  const caseId = sha256(
+    canonicalJson({
+      providerSymbol: input.providerSymbol,
+      nativeTicker: input.nativeTicker,
+      replayAsOf: input.replayAsOf,
+      eventIds,
+    }),
+  );
+  const withoutHash = {
+    caseId,
+    providerSymbol: input.providerSymbol,
+    nativeTicker: input.nativeTicker,
+    replayAsOf: input.replayAsOf,
+    eventIds,
+    manifestCreatedAt: input.manifestCreatedAt,
+  } satisfies Omit<EventReplayManifest, 'manifestHash'>;
+  return {
+    manifest: {
+      ...withoutHash,
+      manifestHash: sha256(canonicalJson(withoutHash)),
+    },
+  };
+}
+
+export class EventReplayEngine {
+  constructor(private readonly store: CaptureStore) {}
+
+  async listCases(): Promise<EventReplayCase[]> {
+    return this.store.listEventReplayCases();
+  }
+
+  async simulate(caseId: string): Promise<EventReplayResult> {
+    const replayCase = await this.store.getEventReplayCase(caseId);
+    if (replayCase === null) {
+      throw new ReplayError('replay_case_not_found', `event replay case ${caseId} was not found`);
+    }
+    assertEventReplayManifestHash(replayCase.manifest);
+    const events = await Promise.all(
+      replayCase.manifest.eventIds.map((eventId) => this.store.getSourceEvent(eventId)),
+    );
+    const missingEventId = replayCase.manifest.eventIds.find((_, index) => events[index] === null);
+    if (missingEventId !== undefined) {
+      throw new ReplayError(
+        'replay_snapshot_not_found',
+        `event replay manifest references a missing source event ${missingEventId}`,
+      );
+    }
+    const resolvedEvents = events.filter((event): event is SourceEvent => event !== null);
+    assertEventsAvailableBy(replayCase.manifest.replayAsOf, resolvedEvents);
+    const allAnalyses = (
+      await Promise.all(resolvedEvents.map((event) => this.store.listEventAnalyses(event.eventId)))
+    ).flat();
+    const replayMs = Date.parse(replayCase.manifest.replayAsOf);
+    const analyses = allAnalyses.filter((analysis) => Date.parse(analysis.processedAt) <= replayMs);
+    const laterAnalyses = allAnalyses.filter(
+      (analysis) => Date.parse(analysis.processedAt) > replayMs,
+    );
+    return {
+      mode: 'REPLAY',
+      asOf: replayCase.manifest.replayAsOf,
+      caseId: replayCase.manifest.caseId,
+      manifestHash: replayCase.manifest.manifestHash,
+      data: {
+        providerSymbol: replayCase.manifest.providerSymbol,
+        nativeTicker: replayCase.manifest.nativeTicker,
+        events: resolvedEvents,
+        analyses,
+        laterAnalyses,
+      },
+      warnings: laterAnalyses.length === 0 ? [] : ['some analyses were processed after replayAsOf'],
+      limitations: [
+        'Event replay uses immutable SEC source events and persisted analyses without provider calls.',
+        'This event-only replay intentionally contains no fabricated historical market snapshots.',
+        'Source availability and analysis processing time are kept separate.',
+      ],
+    };
+  }
 }
 
 export class ReplayEngine {
@@ -383,6 +494,19 @@ function assertManifestHash(manifest: ReplayManifest): void {
     throw new ReplayError(
       'replay_manifest_invalid',
       'replay manifest hash does not match its contents',
+    );
+  }
+}
+
+function assertEventReplayManifestHash(manifest: EventReplayManifest): void {
+  const withoutHash = Object.fromEntries(
+    Object.entries(manifest).filter(([key]) => key !== 'manifestHash'),
+  );
+  const expected = sha256(canonicalJson(withoutHash));
+  if (expected !== manifest.manifestHash) {
+    throw new ReplayError(
+      'replay_manifest_invalid',
+      'event replay manifest hash does not match its contents',
     );
   }
 }

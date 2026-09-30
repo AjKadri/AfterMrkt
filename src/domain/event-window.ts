@@ -116,6 +116,39 @@ export function resolveRegularSessionClose(
   return zonedLocalTimestamp(localDate.isoDate, time.hours, time.minutes, time.seconds, timeZone);
 }
 
+export function resolveNextRegularSessionOpen(
+  afterAsOf: string,
+  markets: BitgetMarket[] | null,
+  calendar: BitgetCalendar | null,
+  market = DEFAULT_MARKET,
+): string | null {
+  if (markets === null || calendar === null) return null;
+  const marketRecord = markets.find((item) => item.market.toUpperCase() === market.toUpperCase());
+  const regular = marketRecord?.stateList?.find((state) => state.state.toLowerCase() === 'regular');
+  const startTime = regular?.startTime;
+  if (startTime === undefined) return null;
+  const time = parseLocalTime(startTime);
+  if (time === null) return null;
+  const timeZone = resolveTimeZone(calendar.timeZone, regular?.timeZone);
+  if (timeZone === null) return null;
+  const baseDate = localDateParts(afterAsOf, timeZone);
+  if (baseDate === null) return null;
+  for (let offset = 1; offset <= 14; offset += 1) {
+    const isoDate = addIsoDays(baseDate.isoDate, offset);
+    const candidateDate = localDateParts(`${isoDate}T12:00:00.000Z`, timeZone);
+    if (
+      candidateDate === null ||
+      !isTradingWeekday(candidateDate.weekday, calendar.regularConfig)
+    ) {
+      continue;
+    }
+    if (isClosedBySpecificCalendar(isoDate, calendar)) continue;
+    const open = zonedLocalTimestamp(isoDate, time.hours, time.minutes, time.seconds, timeZone);
+    if (open !== null && Date.parse(open) > Date.parse(afterAsOf)) return open;
+  }
+  return null;
+}
+
 function resolveTimeZone(calendarTimeZone: string | undefined, marketTimeZone: string | undefined) {
   const value = (calendarTimeZone ?? marketTimeZone ?? '').trim();
   if (value === '') return null;
@@ -211,6 +244,13 @@ function zonedLocalTimestamp(
   const offset = parseOffset(offsetPart);
   if (offset === null) return null;
   return new Date(approximateUtc.getTime() - offset * 60_000).toISOString();
+}
+
+function addIsoDays(isoDate: string, days: number): string {
+  const parsed = new Date(`${isoDate}T12:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime())) return isoDate;
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
 }
 
 function parseOffset(value: string | undefined): number | null {

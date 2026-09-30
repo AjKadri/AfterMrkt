@@ -13,6 +13,7 @@ import {
   parseQwenEvent,
   type QwenCall,
   type QwenEvidencePacket,
+  type QwenThinkingMode,
 } from '../adapters/qwen/index.js';
 import type { QwenEvent } from '../contracts/qwen.js';
 import type { CaptureStore } from '../persistence/types.js';
@@ -20,6 +21,7 @@ import { deduplicateSourceEvents } from './event-context.js';
 
 export type EventAnalysisClient = {
   model: string;
+  thinkingMode?: QwenThinkingMode;
   analyzeEvidence(input: QwenEvidencePacket): Promise<QwenCall>;
 };
 
@@ -31,6 +33,7 @@ export type EvidenceBindingIssue = {
 export type QwenUsageLedger = {
   analysisCount: number;
   inputTokens: number;
+  reasoningTokens: number;
   outputTokens: number;
   totalTokens: number;
   cacheTokens: number;
@@ -45,6 +48,14 @@ export function buildEvidencePacket(
   event: SourceEvent,
   verifiedCompanyName: string | null = null,
 ): QwenEvidencePacket {
+  const details = event.details;
+  const relevantItemId = typeof details.relevantItemId === 'string' ? details.relevantItemId : null;
+  const excerptStartOffset =
+    typeof details.excerptStartOffset === 'number' ? details.excerptStartOffset : 0;
+  const excerptEndOffset =
+    typeof details.excerptEndOffset === 'number'
+      ? details.excerptEndOffset
+      : excerptStartOffset + event.excerpt.length;
   return {
     providerSymbol: event.providerSymbol,
     nativeTicker: event.nativeTicker,
@@ -53,7 +64,10 @@ export function buildEvidencePacket(
     sourceUrl: event.sourceUrl,
     sourceAvailableAt: event.sourceAvailableAt,
     title: event.title,
+    relevantItemId,
     boundedExcerpt: event.excerpt,
+    excerptStartOffset,
+    excerptEndOffset,
   };
 }
 
@@ -69,6 +83,12 @@ export function validateEvidenceBinding(
     });
   }
   const spans = new Map<string, QwenEvent['evidenceSpans'][number]>();
+  const excerptStartOffset =
+    typeof event.details.excerptStartOffset === 'number' ? event.details.excerptStartOffset : 0;
+  const excerptEndOffset =
+    typeof event.details.excerptEndOffset === 'number'
+      ? event.details.excerptEndOffset
+      : excerptStartOffset + event.excerpt.length;
   for (const span of output.evidenceSpans) {
     if (spans.has(span.id)) {
       issues.push({ code: 'duplicate_evidence_span_id', detail: span.id });
@@ -78,11 +98,28 @@ export function validateEvidenceBinding(
     const quoteStart = span.start;
     const quoteEnd = span.end;
     if (quoteStart !== null && quoteStart !== undefined) {
+      const usesAbsoluteSourceOffsets =
+        quoteEnd !== null &&
+        quoteEnd !== undefined &&
+        quoteStart >= excerptStartOffset &&
+        quoteEnd <= excerptEndOffset;
+      const localStart = usesAbsoluteSourceOffsets ? quoteStart - excerptStartOffset : quoteStart;
+      const localEnd =
+        quoteEnd === null || quoteEnd === undefined
+          ? null
+          : usesAbsoluteSourceOffsets
+            ? quoteEnd - excerptStartOffset
+            : quoteEnd;
+      const exactQuoteMatches =
+        localEnd !== null &&
+        localStart >= 0 &&
+        localEnd <= event.excerpt.length &&
+        event.excerpt.slice(localStart, localEnd) === span.quote;
       if (
         quoteEnd === undefined ||
         quoteEnd === null ||
         quoteEnd < quoteStart ||
-        event.excerpt.slice(quoteStart, quoteEnd) !== span.quote
+        !exactQuoteMatches
       ) {
         issues.push({
           code: 'evidence_span_offset_mismatch',
@@ -134,11 +171,13 @@ export class EventAnalysisService {
   ): Promise<EventAnalysis> {
     const event = SourceEventSchema.parse(rawEvent);
     await this.store.saveSourceEvent(event);
+    const thinkingMode = this.client.thinkingMode ?? 'disabled';
     const existing = await this.store.listEventAnalyses(event.eventId);
     const cached = existing
       .filter(
         (analysis) =>
           analysis.model === this.client.model &&
+          analysis.thinkingMode === thinkingMode &&
           analysis.promptVersion === QWEN_ANALYSIS_PROMPT_VERSION &&
           analysis.schemaVersion === QWEN_SCHEMA_VERSION,
       )
@@ -174,6 +213,7 @@ export class EventAnalysisService {
             retryReason,
             errorCode: errorCode(lastError),
             validationIssues: errorCode(lastError) === null ? [] : [errorCode(lastError) as string],
+            thinkingMode,
             processedAt: this.now().toISOString(),
           })
         : analysisFromCall({
@@ -197,6 +237,7 @@ export class EventAnalysisService {
 
 export function buildQwenUsageLedger(analyses: EventAnalysis[]): QwenUsageLedger {
   let inputTokens = 0;
+  let reasoningTokens = 0;
   let outputTokens = 0;
   let totalTokens = 0;
   let cacheTokens = 0;
@@ -207,6 +248,7 @@ export function buildQwenUsageLedger(analyses: EventAnalysis[]): QwenUsageLedger
   const scale = 1_000_000_000n;
   for (const analysis of analyses) {
     inputTokens += analysis.inputTokens ?? 0;
+    reasoningTokens += analysis.reasoningTokens ?? 0;
     outputTokens += analysis.outputTokens ?? 0;
     totalTokens += analysis.totalTokens ?? 0;
     cacheTokens += analysis.cacheTokens ?? 0;
@@ -224,6 +266,7 @@ export function buildQwenUsageLedger(analyses: EventAnalysis[]): QwenUsageLedger
   return {
     analysisCount: analyses.length,
     inputTokens,
+    reasoningTokens,
     outputTokens,
     totalTokens,
     cacheTokens,
@@ -303,6 +346,7 @@ function makeAnalysis(input: {
     model: input.call.model,
     promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
     schemaVersion: QWEN_SCHEMA_VERSION,
+    thinkingMode: input.call.thinkingMode,
     status: input.status,
     output,
     errorCode: input.errorCode,
@@ -313,6 +357,7 @@ function makeAnalysis(input: {
     eventId: input.event.eventId,
     model: input.call.model,
     providerReportedModel: input.call.providerReportedModel,
+    thinkingMode: input.call.thinkingMode,
     promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
     schemaVersion: QWEN_SCHEMA_VERSION,
     eventType: output?.eventType ?? 'unavailable',
@@ -325,6 +370,7 @@ function makeAnalysis(input: {
     confidence: output?.confidence ?? null,
     sourceBound,
     inputTokens: input.call.accounting.inputTokens,
+    reasoningTokens: input.call.accounting.reasoningTokens,
     outputTokens: input.call.accounting.outputTokens,
     totalTokens: input.call.accounting.totalTokens,
     cacheTokens: input.call.accounting.cachedTokens,
@@ -346,6 +392,7 @@ function unavailableAnalysis(input: {
   retryReason: string | null;
   errorCode: string | null;
   validationIssues: string[];
+  thinkingMode: QwenThinkingMode;
   processedAt: string;
 }): EventAnalysis {
   const contentHash = canonicalJson({
@@ -353,6 +400,7 @@ function unavailableAnalysis(input: {
     model: input.model,
     promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
     schemaVersion: QWEN_SCHEMA_VERSION,
+    thinkingMode: input.thinkingMode,
     status: 'unavailable',
     errorCode: input.errorCode,
     validationIssues: input.validationIssues,
@@ -362,6 +410,7 @@ function unavailableAnalysis(input: {
     eventId: input.event.eventId,
     model: input.model,
     providerReportedModel: null,
+    thinkingMode: input.thinkingMode,
     promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
     schemaVersion: QWEN_SCHEMA_VERSION,
     eventType: 'unavailable',
@@ -374,6 +423,7 @@ function unavailableAnalysis(input: {
     confidence: null,
     sourceBound: false,
     inputTokens: null,
+    reasoningTokens: null,
     outputTokens: null,
     totalTokens: null,
     cacheTokens: null,

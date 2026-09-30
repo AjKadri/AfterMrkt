@@ -40,6 +40,7 @@ export const QwenUsageSchema = z
     total_tokens: z.number().optional(),
     input_tokens: z.number().optional(),
     output_tokens: z.number().optional(),
+    reasoning_tokens: z.number().optional(),
     cached_tokens: z.number().optional(),
     prompt_tokens_details: z
       .object({ cached_tokens: z.number().optional() })

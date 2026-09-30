@@ -3,7 +3,7 @@ import { z } from 'zod';
 const DateTimeSchema = z.string().datetime({ offset: true });
 const HashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
-export const EventSourceDetailsSchema = z.record(z.string(), z.string().nullable());
+export const EventSourceDetailsSchema = z.record(z.string(), z.unknown());
 
 export const SourceEventSchema = z.object({
   eventId: HashSchema,
@@ -56,6 +56,7 @@ export const EventAnalysisSchema = z.object({
   eventId: HashSchema,
   model: z.string().min(1),
   providerReportedModel: z.string().nullable(),
+  thinkingMode: z.enum(['provider-default', 'disabled', 'enabled']),
   promptVersion: z.string().min(1),
   schemaVersion: z.string().min(1),
   eventType: z.string().min(1),
@@ -68,6 +69,7 @@ export const EventAnalysisSchema = z.object({
   confidence: z.number().min(0).max(1).nullable(),
   sourceBound: z.boolean(),
   inputTokens: z.number().int().nonnegative().nullable(),
+  reasoningTokens: z.number().int().nonnegative().nullable(),
   outputTokens: z.number().int().nonnegative().nullable(),
   totalTokens: z.number().int().nonnegative().nullable(),
   cacheTokens: z.number().int().nonnegative().nullable(),

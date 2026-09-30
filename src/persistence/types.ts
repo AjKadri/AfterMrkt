@@ -86,6 +86,20 @@ export type ReplayCase = {
   manifest: ReplayManifest;
 };
 
+export type EventReplayManifest = {
+  caseId: string;
+  providerSymbol: string;
+  nativeTicker: string | null;
+  replayAsOf: string;
+  eventIds: string[];
+  manifestCreatedAt: string;
+  manifestHash: string;
+};
+
+export type EventReplayCase = {
+  manifest: EventReplayManifest;
+};
+
 export type BaselineMetricName =
   | 'spreadBps'
   | 'bidDepthWithin25Bps'
@@ -128,6 +142,9 @@ export type CaptureStore = {
   saveReplayCase(replayCase: ReplayCase): Promise<ReplayCase>;
   getReplayCase(caseId: string): Promise<ReplayCase | null>;
   listReplayCases(): Promise<ReplayCase[]>;
+  saveEventReplayCase(replayCase: EventReplayCase): Promise<EventReplayCase>;
+  getEventReplayCase(caseId: string): Promise<EventReplayCase | null>;
+  listEventReplayCases(): Promise<EventReplayCase[]>;
   saveReplayOutcome(outcome: ReplayOutcomeReference): Promise<ReplayOutcomeReference>;
   listReplayOutcomes(caseId: string): Promise<ReplayOutcomeReference[]>;
   appendCollectionError(record: CollectionErrorRecord): Promise<CollectionErrorRecord>;

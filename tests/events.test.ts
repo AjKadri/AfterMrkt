@@ -54,6 +54,17 @@ describe('event evidence pipeline', () => {
     expect(future.status).toBe('future_source');
   });
 
+  it('qualifies the real historical NVDA post-close timestamps', () => {
+    const result = evaluatePostCloseWindow({
+      event: { sourceAvailableAt: '2026-08-26T20:21:19.000Z' },
+      contextAsOf: '2026-08-26T20:51:19.000Z',
+      markets: MARKETS,
+      calendar: CALENDAR,
+    });
+    expect(result.status).toBe('qualifies');
+    expect(result.regularSessionClose).toBe('2026-08-26T20:00:00.000Z');
+  });
+
   it('returns time_window_unavailable when provider calendar evidence is incomplete', () => {
     const result = evaluatePostCloseWindow({
       event: { sourceAvailableAt: '2026-09-29T20:01:00.000Z' },
@@ -117,6 +128,65 @@ describe('event evidence pipeline', () => {
     expect(buildQwenUsageLedger([analysis]).analysisCount).toBe(1);
   });
 
+  it('binds absolute sanitized-source offsets to the bounded excerpt', () => {
+    const excerpt = 'Item 2.02. The filing reports quarterly results.';
+    const event = {
+      ...makeEvent('absolute-offsets', '2026-09-29T20:01:00.000Z'),
+      excerpt,
+      details: {
+        excerptStartOffset: 500,
+        excerptEndOffset: 500 + excerpt.length,
+      },
+    };
+    const issues = validateEvidenceBinding(event, {
+      eventType: 'earnings',
+      entities: [],
+      materiality: 'possibly_material',
+      facts: [
+        {
+          id: 'fact-1',
+          statement: 'The filing reports quarterly results.',
+          evidenceSpanIds: ['span-1'],
+        },
+      ],
+      uncertainties: [],
+      evidenceSpans: [
+        {
+          id: 'span-1',
+          quote: 'The filing reports quarterly results.',
+          start: 511,
+          end: 548,
+        },
+      ],
+      confidence: 0.8,
+      sourceBound: true,
+      model: 'qwen3.8-max',
+      promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
+    });
+    expect(issues).toEqual([]);
+  });
+
+  it('rejects absolute offsets that do not resolve to the supplied quote', () => {
+    const event = {
+      ...makeEvent('invalid-absolute-offsets', '2026-09-29T20:01:00.000Z'),
+      excerpt: 'Item 2.02. The filing reports quarterly results.',
+      details: { excerptStartOffset: 500, excerptEndOffset: 548 },
+    };
+    const issues = validateEvidenceBinding(event, {
+      eventType: 'earnings',
+      entities: [],
+      materiality: 'possibly_material',
+      facts: [{ id: 'fact-1', statement: 'Claim.', evidenceSpanIds: ['span-1'] }],
+      uncertainties: [],
+      evidenceSpans: [{ id: 'span-1', quote: 'quarterly results', start: 512, end: 529 }],
+      confidence: 0.5,
+      sourceBound: true,
+      model: 'qwen3.8-max',
+      promptVersion: QWEN_ANALYSIS_PROMPT_VERSION,
+    });
+    expect(issues).toEqual([{ code: 'evidence_span_offset_mismatch', detail: 'span-1' }]);
+  });
+
   it('rejects an adversarial prompt-injection-shaped claim that is absent from the source', () => {
     const event = {
       ...makeEvent('prompt-injection', '2026-09-29T20:01:00.000Z'),
@@ -166,6 +236,8 @@ describe('event evidence pipeline', () => {
     expect(second.analysisId).toBe(first.analysisId);
     expect(calls).toBe(2);
     expect(first.promptVersion).toBe(QWEN_ANALYSIS_PROMPT_VERSION);
+    expect(JSON.stringify(first)).not.toContain('chain_of_thought');
+    expect(JSON.stringify(first)).not.toContain('reasoning_content');
   });
 
   it('persists a structured unavailable record for a non-transient provider error', async () => {
@@ -248,6 +320,7 @@ function makeCall(input: {
     usage: null,
     accounting: {
       inputTokens: 10,
+      reasoningTokens: null,
       outputTokens: 20,
       totalTokens: 30,
       cachedTokens: 0,
@@ -258,5 +331,6 @@ function makeCall(input: {
     latencyMs: 5,
     model: 'qwen3.8-max',
     providerReportedModel: 'qwen3.8-max',
+    thinkingMode: 'disabled',
   };
 }

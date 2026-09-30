@@ -20,8 +20,10 @@
     "probe:mcp-transport": "tsx scripts/probes/mcp-transport.ts",
     "probe:orderbook-asymmetry": "tsx scripts/probes/orderbook-asymmetry.ts",
     "probe:qwen": "tsx scripts/probes/qwen.ts",
+    "probe:qwen-thinking": "tsx scripts/probes/qwen-thinking.ts",
     "probe:replay": "tsx scripts/probes/replay.ts",
     "probe:reality-events": "tsx scripts/probes/reality-events.ts",
+    "probe:sec-history": "tsx scripts/probes/sec-history.ts",
     "probe:event-pipeline": "tsx scripts/probes/event-pipeline.ts"
   },
   "dependencies": {

@@ -1,6 +1,8 @@
 export {
   DEFAULT_QWEN_BASE_URL,
   DEFAULT_QWEN_MODEL,
+  DEFAULT_QWEN_REQUEST_TIMEOUT_MS,
+  DEFAULT_QWEN_MAX_OUTPUT_TOKENS,
   QWEN_PROMPT_VERSION,
   QWEN_ANALYSIS_PROMPT_VERSION,
   QWEN_SCHEMA_VERSION,
@@ -15,4 +17,5 @@ export type {
   QwenResponseFormat,
   QwenTokenAccounting,
   QwenEvidencePacket,
+  QwenThinkingMode,
 } from './client.js';

@@ -9,6 +9,8 @@ export type {
   BaselineMetricName,
   CaptureStore,
   CollectionErrorRecord,
+  EventReplayCase,
+  EventReplayManifest,
   HistoricalBaseline,
   MarketSnapshot,
   MarketSnapshotInput,
