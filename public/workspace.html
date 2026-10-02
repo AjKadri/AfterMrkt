@@ -1,0 +1,1397 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="AfterMrkt decision workspace for Bitget tokenized U.S. stocks."
+    />
+    <title>AfterMrkt Workspace | Decision Lens</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23121414'/%3E%3Cpath d='M16 42 27 21l8 13 8-13 5 21h-9l-2-9-6 9h-7l-4-8-4 8z' fill='%23a9f87a'/%3E%3C/svg%3E"
+    />
+    <style>
+      :root {
+        --ink: #171a1a;
+        --muted: #6f746f;
+        --line: rgba(23, 26, 26, 0.12);
+        --paper: #f5f2eb;
+        --mint: #bcecf0;
+        --green: #61d7e4;
+        --green-deep: #27445a;
+        --black: #101820;
+        --radius-md: 18px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--paper);
+        font-family: Arial, Helvetica, sans-serif;
+        overflow-x: hidden;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      button,
+      input {
+        font: inherit;
+      }
+
+      .container {
+        width: min(1180px, calc(100% - 44px));
+        margin: 0 auto;
+      }
+
+      .top-nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 82px;
+        gap: 24px;
+        font-size: 13px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        font-weight: 700;
+      }
+
+      .brand-mark {
+        width: 18px;
+        height: 18px;
+        border-radius: 5px;
+        background: linear-gradient(135deg, var(--mint), var(--green));
+        transform: rotate(17deg);
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 27px;
+        color: rgba(23, 26, 26, 0.66);
+      }
+
+      .nav-links a:hover {
+        color: var(--ink);
+      }
+
+      .nav-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 38px;
+        padding: 0 15px;
+        border: 1px solid rgba(23, 26, 26, 0.13);
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .button-light {
+        background: rgba(255, 255, 255, 0.52);
+      }
+      .button-dark {
+        color: #f6fbfb;
+        border-color: var(--black);
+        background: var(--black);
+      }
+
+      .workspace-section {
+        padding: 20px 0 116px;
+      }
+
+      .workspace-context {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 13px 0;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10px;
+        letter-spacing: 0.03em;
+      }
+
+      .workspace-context strong {
+        color: var(--ink);
+        font-weight: 500;
+      }
+
+      .workspace-live {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--green-deep);
+        font-weight: 700;
+        letter-spacing: 0.09em;
+      }
+
+      .workspace-live::before {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--green);
+        content: '';
+      }
+
+      .workspace-instrument {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 27px 0 19px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .workspace-symbol {
+        display: flex;
+        align-items: baseline;
+        gap: 9px;
+      }
+
+      .workspace-symbol h1 {
+        margin: 0;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: 33px;
+        font-weight: 400;
+        letter-spacing: -0.07em;
+      }
+
+      .workspace-symbol small {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .workspace-provider {
+        margin-top: 6px;
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10px;
+      }
+
+      .workspace-session {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding-top: 2px;
+        text-align: right;
+      }
+
+      .workspace-session-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 4px rgba(97, 215, 228, 0.15);
+      }
+
+      .workspace-session strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 11px;
+        letter-spacing: 0.1em;
+      }
+      .workspace-session span:last-child {
+        display: block;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .workspace-intro {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(230px, 0.55fr);
+        align-items: end;
+        gap: 40px;
+        padding: 33px 0 25px;
+      }
+
+      .section-kicker {
+        margin: 0 0 10px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .workspace-intro h2 {
+        max-width: 590px;
+        margin: 0;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: clamp(35px, 5vw, 60px);
+        font-weight: 400;
+        letter-spacing: -0.075em;
+        line-height: 0.95;
+      }
+
+      .workspace-intro h2 em {
+        color: var(--green-deep);
+        font-style: normal;
+      }
+      .workspace-intro p {
+        max-width: 315px;
+        margin: 0 0 4px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .workspace-timeline {
+        padding: 18px 20px 16px;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.2);
+      }
+
+      .workspace-timeline-labels,
+      .workspace-timeline-footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 9px;
+      }
+
+      .workspace-timeline-track {
+        position: relative;
+        height: 57px;
+        margin: 11px 8px 4px;
+      }
+
+      .workspace-timeline-track::before {
+        position: absolute;
+        top: 29px;
+        right: 0;
+        left: 0;
+        height: 1px;
+        background: var(--ink);
+        content: '';
+      }
+
+      .workspace-tick {
+        position: absolute;
+        top: 22px;
+        width: 15px;
+        height: 15px;
+        border: 3px solid var(--paper);
+        border-radius: 50%;
+        background: var(--ink);
+        box-shadow: 0 0 0 1px var(--ink);
+      }
+
+      .workspace-tick.close {
+        left: 0;
+      }
+      .workspace-tick.event {
+        left: 34%;
+        background: var(--green);
+        box-shadow: 0 0 0 1px var(--green-deep);
+      }
+      .workspace-tick.now {
+        left: 69%;
+        background: #e9c49b;
+        box-shadow: 0 0 0 1px #a47c53;
+      }
+      .workspace-tick.open {
+        right: 0;
+      }
+
+      .workspace-timeline-note {
+        position: absolute;
+        top: -2px;
+        color: var(--ink);
+        font-size: 10px;
+        font-weight: 700;
+        white-space: nowrap;
+        transform: translateX(-50%);
+      }
+
+      .workspace-timeline-note.event {
+        left: 34%;
+      }
+      .workspace-timeline-note.now {
+        left: 69%;
+      }
+
+      .workspace-timeline-note small {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 9px;
+        font-weight: 400;
+        text-align: center;
+      }
+
+      .workspace-timeline-footer {
+        color: var(--ink);
+        font-size: 10px;
+      }
+      .workspace-timeline-footer strong {
+        color: var(--green-deep);
+        font-weight: 700;
+      }
+
+      .decision-lens {
+        margin-top: 20px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: rgba(255, 255, 255, 0.55);
+        box-shadow: 0 11px 28px rgba(42, 48, 45, 0.05);
+      }
+
+      .decision-lens-heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 15px;
+        padding: 16px 19px 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .decision-lens-heading span {
+        color: rgba(23, 26, 26, 0.48);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+      .decision-lens-heading strong {
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: 20px;
+        font-weight: 400;
+        letter-spacing: -0.05em;
+      }
+
+      .decision-questions {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .decision-question {
+        min-height: 154px;
+        padding: 20px;
+        border-right: 1px solid var(--line);
+      }
+      .decision-question:last-child {
+        border-right: 0;
+        color: #f7fafb;
+        background: var(--black);
+      }
+
+      .decision-question-label {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: rgba(23, 26, 26, 0.48);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .decision-question-label::before {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--green);
+        content: '';
+      }
+      .decision-question h3 {
+        margin: 14px 0 7px;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: 26px;
+        font-weight: 400;
+        letter-spacing: -0.06em;
+        line-height: 0.96;
+      }
+      .decision-question p {
+        max-width: 238px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.45;
+      }
+      .decision-question:last-child p {
+        color: rgba(247, 250, 251, 0.68);
+      }
+
+      .workspace-link {
+        display: inline-block;
+        margin-top: 13px;
+        padding: 0;
+        border: 0;
+        color: var(--green-deep);
+        background: transparent;
+        cursor: pointer;
+        font-size: 10px;
+        font-weight: 700;
+      }
+      .decision-question:last-child .workspace-link {
+        color: var(--mint);
+      }
+
+      .workspace-lower {
+        display: grid;
+        grid-template-columns: minmax(0, 1.08fr) minmax(300px, 0.92fr);
+        gap: 13px;
+        margin-top: 13px;
+      }
+
+      .workspace-panel {
+        min-width: 0;
+        padding: 17px 18px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.65);
+      }
+      .workspace-panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin-bottom: 13px;
+      }
+      .workspace-panel-head h3 {
+        margin: 0;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: 23px;
+        font-weight: 400;
+        letter-spacing: -0.055em;
+      }
+      .workspace-panel-head span {
+        color: rgba(23, 26, 26, 0.48);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 9px;
+        text-transform: uppercase;
+      }
+
+      .workspace-event {
+        display: grid;
+        grid-template-columns: 8px minmax(0, 1fr);
+        gap: 10px;
+        padding: 12px;
+        border-radius: 9px;
+        background: rgba(233, 209, 180, 0.36);
+      }
+      .workspace-event::before {
+        width: 8px;
+        height: 8px;
+        margin-top: 4px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 4px rgba(97, 215, 228, 0.14);
+        content: '';
+      }
+      .workspace-event strong {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .workspace-event p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+      .workspace-event-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 10px;
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 9px;
+      }
+
+      .workspace-evidence-detail {
+        max-height: 0;
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.5;
+        transition:
+          max-height 280ms ease,
+          margin-top 280ms ease;
+      }
+      .workspace-evidence-detail.is-open {
+        max-height: 120px;
+        margin-top: 13px;
+      }
+      .workspace-panel-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .workspace-panel-footer .workspace-link {
+        margin-top: 0;
+      }
+
+      .workspace-market-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px 18px;
+      }
+      .workspace-market-value {
+        padding-bottom: 9px;
+        border-bottom: 1px solid var(--line);
+      }
+      .workspace-market-value span {
+        display: block;
+        color: rgba(23, 26, 26, 0.48);
+        font-size: 10px;
+      }
+      .workspace-market-value strong {
+        display: block;
+        margin-top: 5px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .workspace-market-warning {
+        margin-top: 12px;
+        padding: 9px 10px;
+        border-radius: 8px;
+        color: #74561b;
+        background: #f2e0ae;
+        font-size: 10px;
+        line-height: 1.4;
+      }
+
+      .exit-corridor-panel {
+        margin-top: 13px;
+        padding: 19px;
+        border-radius: 14px;
+        color: #f4f7f8;
+        background: var(--black);
+        box-shadow: 0 15px 26px rgba(16, 24, 32, 0.14);
+      }
+      .exit-corridor-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      .exit-corridor-head h3 {
+        margin: 0;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: 27px;
+        font-weight: 400;
+        letter-spacing: -0.06em;
+      }
+      .exit-corridor-head p {
+        margin: 5px 0 0;
+        color: rgba(244, 247, 248, 0.56);
+        font-size: 10px;
+      }
+      .workspace-quantity {
+        display: flex;
+        align-items: end;
+        gap: 8px;
+        min-width: 220px;
+      }
+      .workspace-quantity label {
+        flex: 1;
+        color: rgba(244, 247, 248, 0.58);
+        font-size: 10px;
+      }
+      .workspace-quantity input {
+        display: block;
+        width: 100%;
+        margin-top: 5px;
+        padding: 8px 9px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 7px;
+        color: #f4f7f8;
+        background: rgba(255, 255, 255, 0.08);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+      }
+      .workspace-preset-row {
+        display: flex;
+        gap: 4px;
+      }
+      .workspace-preset {
+        padding: 7px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 7px;
+        color: rgba(244, 247, 248, 0.7);
+        background: transparent;
+        cursor: pointer;
+        font-size: 9px;
+      }
+      .workspace-preset.is-active,
+      .workspace-preset:hover {
+        color: var(--black);
+        border-color: var(--mint);
+        background: var(--mint);
+      }
+
+      .exit-corridor {
+        display: grid;
+        grid-template-columns: 1fr 165px;
+        gap: 22px;
+        align-items: center;
+        margin-top: 22px;
+        padding-top: 16px;
+        border-top: 1px solid rgba(255, 255, 255, 0.13);
+      }
+      .exit-corridor-plot {
+        display: grid;
+        gap: 13px;
+      }
+      .exit-corridor-row {
+        display: grid;
+        grid-template-columns: 155px minmax(0, 1fr) 70px;
+        align-items: center;
+        gap: 9px;
+        color: rgba(244, 247, 248, 0.62);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 9px;
+      }
+      .exit-corridor-row strong {
+        color: #f4f7f8;
+        font-weight: 500;
+        text-align: right;
+      }
+      .exit-corridor-line {
+        position: relative;
+        height: 7px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .exit-corridor-line::before {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: var(--fill);
+        height: 7px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, var(--green), #d1f3ec);
+        content: '';
+      }
+      .exit-corridor-line::after {
+        position: absolute;
+        top: -4px;
+        left: var(--fill);
+        width: 15px;
+        height: 15px;
+        border: 3px solid var(--black);
+        border-radius: 50%;
+        background: var(--mint);
+        box-shadow: 0 0 0 1px var(--mint);
+        content: '';
+        transform: translateX(-50%);
+      }
+      .exit-corridor-stats {
+        display: grid;
+        gap: 10px;
+      }
+      .exit-corridor-stat {
+        padding-bottom: 9px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.13);
+      }
+      .exit-corridor-stat span {
+        display: block;
+        color: rgba(244, 247, 248, 0.52);
+        font-size: 10px;
+      }
+      .exit-corridor-stat strong {
+        display: block;
+        margin-top: 4px;
+        color: var(--mint);
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: 22px;
+        font-weight: 400;
+        letter-spacing: -0.04em;
+      }
+      .exit-corridor-note {
+        margin: 14px 0 0;
+        color: rgba(244, 247, 248, 0.55);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+
+      .evidence-coverage {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-top: 14px;
+        padding: 11px 13px;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .evidence-coverage-label {
+        margin-right: 4px;
+        color: rgba(23, 26, 26, 0.48);
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .coverage-state {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px 7px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.68);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 9px;
+      }
+      .coverage-state::before {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--green);
+        content: '';
+      }
+      .coverage-state.pending::before {
+        background: #d19f3a;
+      }
+      .coverage-state.unavailable::before {
+        background: #bd6755;
+      }
+      .coverage-state.stale::before {
+        background: #7773ac;
+      }
+      .evidence-coverage .workspace-link {
+        margin: 0 0 0 auto;
+        font-size: 9px;
+      }
+      .workspace-footnote {
+        display: flex;
+        justify-content: space-between;
+        gap: 15px;
+        margin-top: 15px;
+        color: rgba(23, 26, 26, 0.48);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 9px;
+      }
+      .workspace-footnote strong {
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      .instrument-picker {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .instrument-picker select {
+        max-width: 220px;
+        padding: 5px 7px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.64);
+        font:
+          10px ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+      }
+      .workspace-preset.simulate {
+        color: var(--black);
+        border-color: var(--mint);
+        background: var(--mint);
+      }
+      .workspace-preset:disabled {
+        cursor: wait;
+        opacity: 0.55;
+      }
+      .provenance-details {
+        flex-basis: 100%;
+        padding-top: 8px;
+        color: var(--muted);
+        font:
+          10px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+      }
+
+      .decision-lens,
+      .workspace-panel,
+      .exit-corridor-panel,
+      .workspace-event,
+      .workspace-market-warning {
+        position: relative;
+        overflow: hidden;
+      }
+
+      .decision-lens::after,
+      .workspace-panel::after,
+      .workspace-event::after,
+      .workspace-market-warning::after {
+        position: absolute;
+        top: -52%;
+        left: -20%;
+        width: 26%;
+        height: 190%;
+        background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.46), transparent);
+        content: '';
+        opacity: 0.52;
+        pointer-events: none;
+        transform: rotate(18deg);
+      }
+
+      .exit-corridor-panel {
+        background: linear-gradient(145deg, #1b3545, var(--black) 65%, #0b151d);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.22),
+          0 20px 35px rgba(16, 24, 32, 0.16);
+      }
+
+      .exit-corridor-panel::after {
+        position: absolute;
+        top: -48%;
+        left: -12%;
+        width: 28%;
+        height: 190%;
+        background: linear-gradient(105deg, transparent, rgba(188, 236, 240, 0.14), transparent);
+        content: '';
+        pointer-events: none;
+        transform: rotate(18deg);
+      }
+
+      .exit-corridor-panel > * {
+        position: relative;
+        z-index: 1;
+      }
+
+      .workspace-footer {
+        padding: 25px 0;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .workspace-footer a {
+        color: var(--green-deep);
+        font-weight: 700;
+      }
+
+      .site-footer {
+        padding: 72px 0 36px;
+        background:
+          radial-gradient(circle at 50% 0%, rgba(61, 169, 179, 0.16), transparent 44%), #0b1218;
+      }
+
+      .site-footer-card {
+        position: relative;
+        min-height: 400px;
+        padding: 55px 48px 26px;
+        overflow: hidden;
+        border-radius: var(--radius-md);
+        color: #f4f1e9;
+        background: linear-gradient(145deg, #183545, var(--black) 58%, #0a141b);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.2),
+          0 28px 65px rgba(8, 18, 25, 0.24);
+      }
+
+      .site-footer-card::before {
+        position: absolute;
+        top: -46%;
+        left: -18%;
+        width: 34%;
+        height: 190%;
+        background: linear-gradient(105deg, transparent, rgba(188, 236, 240, 0.16), transparent);
+        content: '';
+        pointer-events: none;
+        transform: rotate(18deg);
+      }
+
+      .site-footer-top {
+        display: grid;
+        position: relative;
+        z-index: 1;
+        grid-template-columns: 1.7fr repeat(3, 1fr);
+        gap: 36px;
+      }
+
+      .site-footer-brand {
+        max-width: 215px;
+      }
+      .site-footer-brand h3 {
+        margin: 0 0 12px;
+        font-size: 17px;
+        letter-spacing: -0.04em;
+      }
+      .site-footer-brand p {
+        margin: 0;
+        color: rgba(244, 241, 233, 0.52);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .site-footer-column h4 {
+        margin: 0 0 15px;
+        color: rgba(244, 241, 233, 0.46);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .site-footer-links {
+        display: grid;
+        gap: 9px;
+        color: rgba(244, 241, 233, 0.82);
+        font-size: 12px;
+      }
+      .site-footer-links a:hover {
+        color: var(--mint);
+      }
+      .site-footer-meta {
+        display: flex;
+        position: relative;
+        z-index: 1;
+        justify-content: space-between;
+        gap: 24px;
+        margin-top: 76px;
+        color: rgba(244, 241, 233, 0.48);
+        font-size: 10px;
+      }
+      .site-footer-wordmark {
+        position: absolute;
+        z-index: 0;
+        right: 28px;
+        bottom: -13px;
+        left: 28px;
+        overflow: hidden;
+        color: transparent;
+        background: linear-gradient(
+          180deg,
+          #bcecf0 0%,
+          #61d7e4 36%,
+          #2f91ab 61%,
+          #27445a 79%,
+          #101820 100%
+        );
+        background-clip: text;
+        -webkit-background-clip: text;
+        font-size: clamp(67px, 13vw, 178px);
+        font-weight: 900;
+        letter-spacing: -0.1em;
+        line-height: 0.8;
+        opacity: 0.95;
+        text-shadow: 0 0 28px rgba(157, 223, 225, 0.14);
+      }
+
+      @media (max-width: 820px) {
+        .container {
+          width: min(100% - 32px, 650px);
+        }
+        .nav-links {
+          display: none;
+        }
+        .workspace-intro,
+        .workspace-lower,
+        .exit-corridor {
+          grid-template-columns: 1fr;
+        }
+        .exit-corridor-stats {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 520px) {
+        .container {
+          width: calc(100% - 24px);
+        }
+        .nav-actions .button-light {
+          display: none;
+        }
+        .workspace-context,
+        .workspace-instrument,
+        .exit-corridor-head,
+        .workspace-footnote {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+        .workspace-session {
+          text-align: left;
+        }
+        .decision-questions {
+          grid-template-columns: 1fr;
+        }
+        .decision-question {
+          min-height: 0;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+        .decision-question:last-child {
+          border-bottom: 0;
+        }
+        .workspace-quantity {
+          width: 100%;
+        }
+        .exit-corridor-row {
+          grid-template-columns: 145px minmax(0, 1fr) 63px;
+        }
+        .evidence-coverage .workspace-link {
+          margin-left: 0;
+        }
+
+        .site-footer-card {
+          min-height: 520px;
+          padding: 34px 22px 22px;
+        }
+
+        .site-footer-top {
+          grid-template-columns: 1fr 1fr;
+          gap: 28px 18px;
+        }
+
+        .site-footer-brand {
+          grid-column: 1 / -1;
+        }
+
+        .site-footer-meta {
+          display: block;
+          margin-top: 52px;
+          line-height: 1.8;
+        }
+
+        .site-footer-wordmark {
+          right: 10px;
+          bottom: 12px;
+          left: 10px;
+          font-size: 65px;
+        }
+      }
+    </style>
+  </head>
+  <body data-page="workspace">
+    <header class="container top-nav">
+      <a class="brand" href="/" aria-label="AfterMrkt home"
+        ><span class="brand-mark" aria-hidden="true"></span><span>AfterMrkt</span></a
+      >
+      <nav class="nav-links" aria-label="Workspace navigation">
+        <a href="#workspace">Market overview</a>
+        <a href="#evidence">Evidence</a>
+        <a href="#exit-lens">Exit Lens</a>
+        <a href="/replay">Replay</a>
+      </nav>
+      <div class="nav-actions">
+        <a class="button button-light" href="/">Back to landing</a
+        ><a class="button button-dark" href="#workspace">Live context</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="container workspace-section" id="workspace" aria-labelledby="workspace-title">
+        <div class="workspace-context">
+          <span>Decision lens · body section</span
+          ><label class="instrument-picker"
+            >Instrument
+            <select id="instrument-select" aria-label="Select instrument">
+              <option>Loading…</option>
+            </select></label
+          >
+          <span id="context-status"
+            ><strong class="workspace-live">LIVE</strong> · Loading live context…</span
+          >
+        </div>
+
+        <section class="workspace-instrument" aria-label="Instrument context">
+          <div>
+            <div class="workspace-symbol">
+              <h1 id="instrument-native">Loading…</h1>
+              <small id="instrument-company">Loading…</small>
+            </div>
+            <div class="workspace-provider" id="instrument-provider">
+              Loading exact Bitget providerSymbol…
+            </div>
+          </div>
+          <div class="workspace-session">
+            <span class="workspace-session-dot" aria-hidden="true"></span>
+            <div>
+              <strong id="session-status">Loading session…</strong
+              ><span id="session-detail">Loading next open…</span>
+            </div>
+          </div>
+        </section>
+
+        <div class="workspace-intro" id="how-it-works">
+          <div>
+            <p class="section-kicker">The decision lens</p>
+            <h2 id="workspace-title">What happened while the market was <em>closed?</em></h2>
+          </div>
+          <p id="workspace-intro-copy">
+            Loading live context, source evidence, and observed-book exit cost…
+          </p>
+        </div>
+
+        <section class="workspace-timeline" aria-label="Closed-market gap timeline">
+          <div class="workspace-timeline-labels">
+            <span id="timeline-close-label">U.S. MARKET CLOSE · --</span
+            ><span id="timeline-open-label">NEXT OPEN · --</span>
+          </div>
+          <div class="workspace-timeline-track">
+            <span class="workspace-tick close" aria-hidden="true"></span
+            ><span class="workspace-tick event" aria-hidden="true"></span
+            ><span class="workspace-tick now" aria-hidden="true"></span
+            ><span class="workspace-tick open" aria-hidden="true"></span
+            ><span class="workspace-timeline-note event" id="timeline-event"
+              >EVENT<small>--</small></span
+            ><span class="workspace-timeline-note now" id="timeline-now">NOW<small>--</small></span>
+          </div>
+          <div class="workspace-timeline-footer">
+            <span id="timeline-reference">rToken price at U.S. regular close · --</span
+            ><strong id="timeline-move">Loading move…</strong>
+          </div>
+        </section>
+
+        <section class="decision-lens" aria-labelledby="decision-lens-title">
+          <div class="decision-lens-heading">
+            <span>Decision lens</span
+            ><strong id="decision-lens-title">Three questions. One after-hours move.</strong>
+          </div>
+          <div class="decision-questions">
+            <article class="decision-question">
+              <div class="decision-question-label">The move</div>
+              <h3>What moved?</h3>
+              <p id="move-summary">Loading move context…</p>
+              <button id="move-link" type="button" class="workspace-link">View move context</button>
+            </article>
+            <article class="decision-question">
+              <div class="decision-question-label">The evidence</div>
+              <h3>Why?</h3>
+              <p id="evidence-summary">Loading source evidence…</p>
+              <button id="evidence-link" type="button" class="workspace-link">View evidence</button>
+            </article>
+            <article class="decision-question">
+              <div class="decision-question-label">The exit</div>
+              <h3>Can I get out?</h3>
+              <p>Enter a position to model what the observed book could absorb.</p>
+              <button id="exit-link" type="button" class="workspace-link">
+                Run exit simulation
+              </button>
+            </article>
+          </div>
+        </section>
+
+        <div class="workspace-lower">
+          <article class="workspace-panel" id="evidence" aria-labelledby="evidence-title">
+            <div class="workspace-panel-head">
+              <h3 id="evidence-title">Why it moved</h3>
+              <span>Source fact</span>
+            </div>
+            <div class="workspace-event">
+              <div>
+                <strong id="event-title">Waiting for source evidence…</strong>
+                <p id="event-excerpt">
+                  The source fact and any later AI interpretation will appear here when the API
+                  returns them.
+                </p>
+                <div class="workspace-event-meta">
+                  <span id="event-source">Source · --</span
+                  ><span id="event-availability">Availability · --</span
+                  ><span id="event-materiality">Materiality · --</span>
+                </div>
+              </div>
+            </div>
+            <div class="workspace-evidence-detail" id="evidence-detail" aria-hidden="true">
+              Source URL, evidence spans, native-confirmation state, and analysis provenance will
+              appear here.
+            </div>
+            <div class="workspace-panel-footer">
+              <span id="analysis-status">Qwen analysis · loading…</span
+              ><button
+                class="workspace-link"
+                id="evidence-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="evidence-detail"
+              >
+                View evidence spans and source URL
+              </button>
+            </div>
+          </article>
+
+          <article class="workspace-panel" aria-labelledby="market-now-title">
+            <div class="workspace-panel-head">
+              <h3 id="market-now-title">Market right now</h3>
+              <span id="market-book-asof">Book · loading</span>
+            </div>
+            <div class="workspace-market-list">
+              <div class="workspace-market-value">
+                <span>Spread</span><strong id="market-spread">--</strong>
+              </div>
+              <div class="workspace-market-value">
+                <span>Midpoint</span><strong id="market-midpoint">--</strong>
+              </div>
+              <div class="workspace-market-value">
+                <span>Depth · 50 bps</span><strong id="market-depth">--</strong>
+              </div>
+              <div class="workspace-market-value">
+                <span>Freshness</span><strong id="market-freshness">--</strong>
+              </div>
+            </div>
+            <div class="workspace-market-warning" id="market-warning">
+              Loading observed-book quality…
+            </div>
+          </article>
+        </div>
+
+        <article class="exit-corridor-panel" id="exit-lens" aria-labelledby="exit-title">
+          <div class="exit-corridor-head">
+            <div>
+              <h3 id="exit-title">Your exit</h3>
+              <p>Manual position input · no wallet or account connection</p>
+            </div>
+            <div class="workspace-quantity">
+              <label
+                >Position quantity<input
+                  id="position-quantity"
+                  type="text"
+                  value=""
+                  placeholder="Enter quantity"
+                  inputmode="decimal"
+                  aria-label="Position quantity"
+              /></label>
+              <div class="workspace-preset-row">
+                <button type="button" class="workspace-preset" data-fraction="0.25">25%</button
+                ><button type="button" class="workspace-preset" data-fraction="0.5">50%</button
+                ><button type="button" class="workspace-preset is-active" data-fraction="1">
+                  Full
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="exit-corridor">
+            <div class="exit-corridor-plot" aria-label="Estimated exit corridor">
+              <div class="exit-corridor-row">
+                <span>Displayed price</span>
+                <div class="exit-corridor-line" style="--fill: 97%"></div>
+                <strong data-exit-price="current">--</strong>
+              </div>
+              <div class="exit-corridor-row">
+                <span>Exit 25% → est.</span>
+                <div class="exit-corridor-line" style="--fill: 77%"></div>
+                <strong data-exit-price="25">--</strong>
+              </div>
+              <div class="exit-corridor-row">
+                <span>Exit 75% → est.</span>
+                <div class="exit-corridor-line" style="--fill: 48%"></div>
+                <strong data-exit-price="75">--</strong>
+              </div>
+              <div class="exit-corridor-row">
+                <span>Exit 100% → est.</span>
+                <div class="exit-corridor-line" style="--fill: 23%"></div>
+                <strong data-exit-price="100">--</strong>
+              </div>
+            </div>
+            <div class="exit-corridor-stats">
+              <div class="exit-corridor-stat">
+                <span>Estimated full-exit VWAP</span><strong id="exit-vwap">--</strong>
+              </div>
+              <div class="exit-corridor-stat">
+                <span>Expected slippage</span><strong id="exit-slippage">--</strong>
+              </div>
+              <div class="exit-corridor-stat">
+                <span>Within 50 bps</span><strong id="exit-executable">--</strong>
+              </div>
+            </div>
+          </div>
+          <p class="exit-corridor-note">
+            Observed-book estimate, not guaranteed fill. The result is <strong>SIMULATED</strong>;
+            live execution is disabled.
+          </p>
+        </article>
+
+        <div class="evidence-coverage" aria-label="Evidence coverage status">
+          <span class="evidence-coverage-label">Evidence coverage</span
+          ><span class="coverage-state" id="coverage-market">Market data · loading</span
+          ><span class="coverage-state pending" id="coverage-analysis">Qwen analysis · loading</span
+          ><span class="coverage-state unavailable" id="coverage-native"
+            >Native confirmation · loading</span
+          ><span class="coverage-state stale" id="coverage-liquidity">Liquidity · loading</span
+          ><button id="provenance-toggle" type="button" class="workspace-link">
+            Why am I seeing this?
+          </button>
+        </div>
+        <div class="workspace-footnote">
+          <span id="workspace-footnote">Loading context provenance…</span
+          ><strong>Simulation available · live execution disabled</strong>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer" id="footer">
+      <div class="container">
+        <div class="site-footer-card">
+          <div class="site-footer-top">
+            <div class="site-footer-brand">
+              <h3>AfterMrkt</h3>
+              <p>A clearer way to read what an off-hours rToken move actually means.</p>
+            </div>
+            <div class="site-footer-column">
+              <h4>Explore</h4>
+              <div class="site-footer-links">
+                <a href="/">Landing page</a><a href="#workspace">Market overview</a
+                ><a href="#exit-lens">Exit Lens</a>
+              </div>
+            </div>
+            <div class="site-footer-column">
+              <h4>Method</h4>
+              <div class="site-footer-links">
+                <a href="#evidence">Evidence</a><a href="#workspace">Data quality</a
+                ><a href="#footer">FAQ</a>
+              </div>
+            </div>
+            <div class="site-footer-column">
+              <h4>Connect</h4>
+              <div class="site-footer-links">
+                <a href="https://x.com/web3aj_" target="_blank" rel="noreferrer">X / Twitter</a
+                ><a href="https://x.com/web3aj_" target="_blank" rel="noreferrer">Contact</a
+                ><a href="#footer">Evidence first</a>
+              </div>
+            </div>
+          </div>
+          <div class="site-footer-meta">
+            <span>© 2026 AfterMrkt. Decision support only.</span
+            ><span>Built for the hours after close.</span>
+          </div>
+          <div class="site-footer-wordmark" aria-hidden="true">AFTERMRKT</div>
+        </div>
+      </div>
+    </footer>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,6 +1,6 @@
 # AfterMrkt
 
-AfterMrkt is a read-only decision-support foundation for Bitget Reality market data. The current milestone normalizes the live public instrument universe, captures immutable public snapshots, computes exact-decimal market quality, and estimates position-aware exits against an observed bid book. It also supports deterministic replay from captured snapshots. It does not contain product screens, wallet support, live account connections, or order submission.
+AfterMrkt is a read-only decision-support application for Bitget Reality market data. It normalizes the live public instrument universe, captures immutable public snapshots, computes exact-decimal market quality, estimates position-aware exits against an observed bid book, and supports deterministic replay from captured snapshots. The integrated UI is served by the same local Node server. It does not provide wallet support, live account connections, or order submission.
 
 ## Setup
 
@@ -37,9 +37,11 @@ Probe evidence is written to the ignored `.agent/evidence/` directory. Public Bi
 
 `npm run probe:capture` writes development-only immutable capture records under `.agent/data/` by default and creates a replay manifest for the first watched symbol with complete snapshots. Set `AFTERMRKT_DATA_DIR` to use another local directory. The file store is a persistence implementation for local development, not a claim of production database durability. Identical provider snapshots are content-addressed and retries are deduplicated.
 
-## Read-only API
+## Local application
 
-Start the backend with `npm run dev:server`. It exposes `GET /api/instruments`, `GET /api/instruments/:symbol/context`, `GET /api/instruments/:symbol/orderbook`, and `POST /api/execution/simulations`. When a capture store is configured by the server, it also exposes `GET /api/replays`, `GET /api/replays/:id`, and `POST /api/replays/:id/simulations`. Replay routes load immutable snapshots only and make no provider calls. Simulation routes return observed-book estimates and never submit an order.
+Start the application with `npm run dev:server` and open `http://127.0.0.1:3000/`. The landing page is at `/`, the live workspace is at `/workspace`, and historical cases are at `/replay`. The browser calls the AfterMrkt API only. It never calls Bitget, SEC EDGAR, Qwen, or the MCP endpoint directly.
+
+The server exposes `GET /api/instruments`, `GET /api/instruments/:symbol/context`, `GET /api/instruments/:symbol/orderbook`, `POST /api/execution/simulations`, and the event and replay routes documented in [docs/frontend-api.md](docs/frontend-api.md). Replay routes load immutable snapshots only and make no provider calls. Simulation routes return observed-book estimates and never submit an order.
 
 Freshness windows and execution labels are provisional configuration constants. They are visible in `src/domain/freshness.ts` and `src/domain/market-quality.ts` and are not statistically validated thresholds.
 

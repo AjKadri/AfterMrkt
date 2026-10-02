@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { join, relative, resolve, sep } from 'node:path';
 import Decimal from 'decimal.js';
 import { ZodError } from 'zod';
 import { classifyThrownError, ProbeError } from '../lib/errors.js';
@@ -59,6 +61,7 @@ import {
 
 export type ApiServerOptions = {
   marketData: PublicMarketDataProvider;
+  frontendDirectory?: string;
   snapshots?: MarketSnapshotStore;
   replayStore?: CaptureStore;
   eventReplayStore?: CaptureStore;
@@ -324,7 +327,60 @@ async function handleRequest(
     return;
   }
 
+  if (
+    method === 'GET' &&
+    (await serveFrontend(response, parsedUrl.pathname, options.frontendDirectory))
+  ) {
+    return;
+  }
+
   sendError(response, now(), 'INVALID_REQUEST', 'route not found', 404);
+}
+
+async function serveFrontend(
+  response: ServerResponse,
+  pathname: string,
+  frontendDirectory = join(process.cwd(), 'public'),
+): Promise<boolean> {
+  const route =
+    pathname === '/'
+      ? 'index.html'
+      : pathname === '/workspace'
+        ? 'workspace.html'
+        : pathname === '/replay'
+          ? 'replay.html'
+          : pathname.replace(/^\/+/, '');
+  if (!route || route.startsWith('api/')) return false;
+  const root = resolve(frontendDirectory);
+  const target = resolve(root, route);
+  const relativeTarget = relative(root, target);
+  if (relativeTarget.startsWith('..' + sep) || relativeTarget === '..') {
+    response.statusCode = 403;
+    response.end('forbidden\n');
+    return true;
+  }
+  try {
+    const body = await readFile(target);
+    response.statusCode = 200;
+    response.setHeader('content-type', frontendContentType(target));
+    response.setHeader('cache-control', 'no-cache');
+    response.end(body);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function frontendContentType(pathname: string): string {
+  if (pathname.endsWith('.html')) return 'text/html; charset=utf-8';
+  if (pathname.endsWith('.js')) return 'text/javascript; charset=utf-8';
+  if (pathname.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (pathname.endsWith('.svg')) return 'image/svg+xml';
+  if (pathname.endsWith('.png')) return 'image/png';
+  if (pathname.endsWith('.jpg') || pathname.endsWith('.jpeg')) return 'image/jpeg';
+  if (pathname.endsWith('.webp')) return 'image/webp';
+  return 'application/octet-stream';
 }
 
 async function sendInstrumentList(
