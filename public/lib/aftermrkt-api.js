@@ -12,10 +12,18 @@ export class AfterMrktApiError extends Error {
 }
 
 async function request(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: { ...JSON_HEADERS, ...(options.headers ?? {}) },
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers: { ...JSON_HEADERS, ...(options.headers ?? {}) },
+    });
+  } catch {
+    throw new AfterMrktApiError(
+      'Live context is unavailable. The local AfterMrkt server is not reachable. Start it and refresh.',
+      'server_unreachable',
+    );
+  }
   let envelope;
   try {
     envelope = await response.json();

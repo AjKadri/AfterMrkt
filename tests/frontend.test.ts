@@ -137,4 +137,19 @@ describe('integrated AfterMrkt frontend', () => {
     expect(combined).not.toContain('49 bps');
     expect(combined).not.toContain('31.8k');
   });
+
+  it('makes the instrument selector and unit-based position input explicit', async () => {
+    const [workspace, client] = await Promise.all([
+      readPublicFile('workspace.html'),
+      readPublicFile('lib/aftermrkt-api.js'),
+    ]);
+
+    expect(workspace).toContain('class="instrument-picker"');
+    expect(workspace).toContain('id="instrument-select" aria-label="Select instrument"');
+    expect(workspace).toContain('class="workspace-quantity-unit">(units)</span');
+    expect(workspace).toContain('placeholder="Enter units"');
+    expect(workspace).toContain('aria-label="Position quantity in units"');
+    expect(client).toContain('server_unreachable');
+    expect(client).toContain('The local AfterMrkt server is not reachable.');
+  });
 });

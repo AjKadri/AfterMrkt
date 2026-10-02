@@ -126,6 +126,7 @@
         align-items: center;
         justify-content: space-between;
         gap: 18px;
+        flex-wrap: wrap;
         padding: 13px 0;
         border-top: 1px solid var(--line);
         border-bottom: 1px solid var(--line);
@@ -806,23 +807,39 @@
       .instrument-picker {
         display: inline-flex;
         align-items: center;
-        gap: 7px;
-        color: var(--muted);
+        gap: 10px;
+        color: var(--ink);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
         white-space: nowrap;
       }
       .instrument-picker select {
-        max-width: 220px;
-        padding: 5px 7px;
-        border: 1px solid var(--line);
-        border-radius: 7px;
+        width: 270px;
+        min-height: 40px;
+        max-width: 320px;
+        padding: 8px 34px 8px 11px;
+        border: 1px solid rgba(23, 26, 26, 0.22);
+        border-radius: 9px;
         color: var(--ink);
-        background: rgba(255, 255, 255, 0.64);
+        background: #fff;
+        box-shadow: 0 5px 14px rgba(23, 26, 26, 0.07);
         font:
-          10px ui-monospace,
+          600 12px ui-monospace,
           SFMono-Regular,
           Menlo,
           Consolas,
           monospace;
+      }
+      .instrument-picker select:focus {
+        outline: 3px solid rgba(157, 223, 225, 0.75);
+        outline-offset: 2px;
+      }
+      .workspace-quantity-unit {
+        color: rgba(244, 247, 248, 0.85);
+        font-size: 9px;
+        letter-spacing: 0.04em;
       }
       .workspace-preset.simulate {
         color: var(--black);
@@ -1059,6 +1076,16 @@
         .workspace-quantity {
           width: 100%;
         }
+        .instrument-picker {
+          width: 100%;
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .instrument-picker select {
+          width: 100%;
+          max-width: none;
+        }
         .exit-corridor-row {
           grid-template-columns: 145px minmax(0, 1fr) 63px;
         }
@@ -1277,13 +1304,14 @@
             </div>
             <div class="workspace-quantity">
               <label
-                >Position quantity<input
+                >Position quantity <span class="workspace-quantity-unit">(units)</span
+                ><input
                   id="position-quantity"
                   type="text"
                   value=""
-                  placeholder="Enter quantity"
+                  placeholder="Enter units"
                   inputmode="decimal"
-                  aria-label="Position quantity"
+                  aria-label="Position quantity in units"
               /></label>
               <div class="workspace-preset-row">
                 <button type="button" class="workspace-preset" data-fraction="0.25">25%</button
