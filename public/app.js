@@ -548,12 +548,15 @@ async function initWorkspace() {
 
 function bindLanding() {
   $$('.landing-faq-panel article').forEach((article) => {
-    article.addEventListener('click', () => {
+    const button = article.querySelector('button');
+    if (!button) return;
+    button.addEventListener('click', () => {
       const answer = article.querySelector('p');
       const icon = article.querySelector('b');
       if (!answer || !icon) return;
       const open = article.classList.toggle('is-open');
       answer.hidden = !open;
+      button.setAttribute('aria-expanded', String(open));
       icon.textContent = open ? '−' : '+';
     });
   });

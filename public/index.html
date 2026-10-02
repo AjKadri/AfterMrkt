@@ -2909,31 +2909,37 @@
             </div>
             <div class="landing-faq-panel">
               <article>
-                <button type="button"><span>What does AfterMrkt actually do?</span><b>−</b></button>
-                <p>
+                <button type="button" aria-controls="landing-faq-answer-1" aria-expanded="true">
+                  <span>What does AfterMrkt actually do?</span><b>−</b>
+                </button>
+                <p id="landing-faq-answer-1">
                   It brings together the rToken move, source-bound event evidence, market quality,
                   and an observed-book exit estimate so you can read the decision clearly.
                 </p>
               </article>
               <article>
-                <button type="button">
+                <button type="button" aria-controls="landing-faq-answer-2" aria-expanded="false">
                   <span>Does AfterMrkt tell me whether to buy or sell?</span><b>+</b>
                 </button>
-                <p hidden>
+                <p id="landing-faq-answer-2" hidden>
                   No. AfterMrkt is decision support. It does not predict fair value or next-session
                   direction, and it keeps the trading decision with you.
                 </p>
               </article>
               <article>
-                <button type="button"><span>How does the Exit Lens work?</span><b>+</b></button>
-                <p hidden>
+                <button type="button" aria-controls="landing-faq-answer-3" aria-expanded="false">
+                  <span>How does the Exit Lens work?</span><b>+</b>
+                </button>
+                <p id="landing-faq-answer-3" hidden>
                   Exit Lens applies deterministic spread, depth, VWAP, slippage, and fill math to an
                   observed Bitget order book. It is an estimate, not a guaranteed fill.
                 </p>
               </article>
               <article>
-                <button type="button"><span>What does Qwen do in AfterMrkt?</span><b>+</b></button>
-                <p hidden>
+                <button type="button" aria-controls="landing-faq-answer-4" aria-expanded="false">
+                  <span>What does Qwen do in AfterMrkt?</span><b>+</b>
+                </button>
+                <p id="landing-faq-answer-4" hidden>
                   Qwen reads source-bound event evidence only. It does not calculate market metrics
                   or create trade decisions, and unavailable evidence stays visible as unavailable.
                 </p>

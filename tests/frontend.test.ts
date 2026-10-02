@@ -39,24 +39,49 @@ describe('integrated AfterMrkt frontend', () => {
   });
 
   it('keeps the homepage FAQ concise and the docs boundaries explicit', async () => {
-    const [landing, docs] = await Promise.all([
+    const [landing, docs, app] = await Promise.all([
       readPublicFile('index.html'),
       readPublicFile('docs.html'),
+      readPublicFile('app.js'),
     ]);
 
     expect(landing.match(/<span class="belt-label">([^<]+)<\/span>/)?.[1]).toBe('NOT LIVE');
     expect(
-      [
-        ...landing.matchAll(
-          /<button type="button">[\s\S]*?<span>([^<]+)<\/span>[\s\S]*?<\/button>/g,
-        ),
-      ].map(([, question]) => question),
+      [...landing.matchAll(/<button[\s\S]*?>\s*<span>([^<]+)<\/span>[\s\S]*?<\/button>/g)].map(
+        ([, question]) => question,
+      ),
     ).toEqual([
       'What does AfterMrkt actually do?',
       'Does AfterMrkt tell me whether to buy or sell?',
       'How does the Exit Lens work?',
       'What does Qwen do in AfterMrkt?',
     ]);
+    const answerIds = [...landing.matchAll(/<p id="(landing-faq-answer-\d+)"(?: hidden)?>/g)].map(
+      ([, id]) => id,
+    );
+    expect(answerIds).toEqual([
+      'landing-faq-answer-1',
+      'landing-faq-answer-2',
+      'landing-faq-answer-3',
+      'landing-faq-answer-4',
+    ]);
+    expect(new Set(answerIds).size).toBe(answerIds.length);
+    expect(landing).toMatch(
+      /<button[^>]*aria-controls="landing-faq-answer-1"[^>]*aria-expanded="true"[^>]*>/,
+    );
+    expect(landing).toMatch(
+      /<button[^>]*aria-controls="landing-faq-answer-2"[^>]*aria-expanded="false"[^>]*>/,
+    );
+    expect(landing).toMatch(
+      /<button[^>]*aria-controls="landing-faq-answer-3"[^>]*aria-expanded="false"[^>]*>/,
+    );
+    expect(landing).toMatch(
+      /<button[^>]*aria-controls="landing-faq-answer-4"[^>]*aria-expanded="false"[^>]*>/,
+    );
+    expect(app).toContain("button.addEventListener('click'");
+    expect(app).toContain('answer.hidden = !open');
+    expect(app).toContain("button.setAttribute('aria-expanded', String(open))");
+    expect(app).toContain("icon.textContent = open ? '−' : '+'");
     expect(docs).toContain('The rToken price around the U.S. regular-session close');
     expect(docs).toContain("not the native stock's closing price");
     expect(docs).toContain('Qwen analyzes source-bound event evidence only');
