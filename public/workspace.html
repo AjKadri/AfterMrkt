@@ -1288,9 +1288,7 @@
               <div class="workspace-preset-row">
                 <button type="button" class="workspace-preset" data-fraction="0.25">25%</button
                 ><button type="button" class="workspace-preset" data-fraction="0.5">50%</button
-                ><button type="button" class="workspace-preset is-active" data-fraction="1">
-                  Full
-                </button>
+                ><button type="button" class="workspace-preset" data-fraction="1">Full</button>
               </div>
             </div>
           </div>
@@ -1342,9 +1340,16 @@
           ><span class="coverage-state unavailable" id="coverage-native"
             >Native confirmation · loading</span
           ><span class="coverage-state stale" id="coverage-liquidity">Liquidity · loading</span
-          ><button id="provenance-toggle" type="button" class="workspace-link">
+          ><button
+            id="provenance-toggle"
+            type="button"
+            class="workspace-link"
+            aria-expanded="false"
+            aria-controls="provenance-details"
+          >
             Why am I seeing this?
           </button>
+          <div id="provenance-details" class="provenance-details" hidden></div>
         </div>
         <div class="workspace-footnote">
           <span id="workspace-footnote">Loading context provenance…</span
@@ -1372,7 +1377,7 @@
               <h4>Method</h4>
               <div class="site-footer-links">
                 <a href="#evidence">Evidence</a><a href="#workspace">Data quality</a
-                ><a href="#footer">FAQ</a>
+                ><a href="/#faq">FAQ</a>
               </div>
             </div>
             <div class="site-footer-column">
@@ -1380,7 +1385,7 @@
               <div class="site-footer-links">
                 <a href="https://x.com/web3aj_" target="_blank" rel="noreferrer">X / Twitter</a
                 ><a href="https://x.com/web3aj_" target="_blank" rel="noreferrer">Contact</a
-                ><a href="#footer">Evidence first</a>
+                ><a href="#evidence">Evidence first</a>
               </div>
             </div>
           </div>

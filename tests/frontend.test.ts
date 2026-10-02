@@ -69,6 +69,36 @@ describe('integrated AfterMrkt frontend', () => {
     expect(docs).toContain('No wallet or account connection is part of the current MVP');
   });
 
+  it('keeps workspace switching, provenance, footer, and replay links bounded', async () => {
+    const [landing, workspace, replay, docs, app] = await Promise.all([
+      readPublicFile('index.html'),
+      readPublicFile('workspace.html'),
+      readPublicFile('replay.html'),
+      readPublicFile('docs.html'),
+      readPublicFile('app.js'),
+    ]);
+    const pages = `${landing}\n${workspace}\n${replay}\n${docs}`;
+
+    expect(workspace).toContain('id="provenance-toggle"');
+    expect(workspace).toContain('aria-expanded="false"');
+    expect(workspace).toContain('aria-controls="provenance-details"');
+    expect(workspace).toContain('id="provenance-details"');
+    expect(app).toContain("toggle.setAttribute('aria-expanded', String(open))");
+    expect(app).toContain('state.symbol !== symbol');
+    expect(app).toContain("button.classList.remove('is-active')");
+    expect(app).toContain('Observed-book estimate, not guaranteed fill. The result is');
+    expect(landing).toContain('href="#faq">FAQ</a>');
+    expect(workspace).toContain('href="/#faq">FAQ</a>');
+    expect(workspace).toContain('href="#evidence">Evidence first</a>');
+    expect(landing).toContain(
+      'href="/replay?caseId=93ea136a84707931785101d27b4a293921846a20a8cb13dc1631dfecb3c26384"',
+    );
+    expect(landing).toContain('REPLAY · 20:51 UTC');
+    expect(landing).toContain('SEC 8-K source fact available at 20:21 UTC');
+    expect(landing).toContain('preserved separately from the historical replay');
+    expect(pages).not.toContain('/docs.html');
+  });
+
   it('does not retain prototype workspace values or external workspace paths', async () => {
     const [workspace, app] = await Promise.all([
       readPublicFile('workspace.html'),

@@ -300,19 +300,15 @@ function bindWorkspaceActions() {
     $('#position-quantity')?.focus();
   });
   $('#provenance-toggle')?.addEventListener('click', () => {
-    const coverage = $('.evidence-coverage');
-    if (!coverage) return;
-    let details = $('#provenance-details');
-    if (!details) {
-      details = document.createElement('div');
-      details.id = 'provenance-details';
-      details.className = 'provenance-details';
-      coverage.append(details);
-    }
+    const details = $('#provenance-details');
+    const toggle = $('#provenance-toggle');
+    if (!details || !toggle) return;
     details.textContent = state.context?.sources?.length
       ? state.context.sources.map((source) => `${source.label} · ${source.observedAt}`).join(' | ')
       : 'This view is assembled from the server-side context contract. No browser-to-provider request is made.';
-    details.hidden = !details.hidden;
+    const open = details.hidden;
+    details.hidden = !open;
+    toggle.setAttribute('aria-expanded', String(open));
   });
   $('#evidence-toggle')?.addEventListener('click', () => {
     const detail = $('#evidence-detail');
@@ -398,6 +394,8 @@ async function runSimulationSuite(quantity) {
     setText('#market-warning', 'Enter a valid positive position quantity to run the simulation.');
     return;
   }
+  const symbol = state.symbol;
+  const requestId = state.requestId;
   const button = $('#simulate-button');
   if (button) {
     button.disabled = true;
@@ -406,17 +404,19 @@ async function runSimulationSuite(quantity) {
   try {
     const quantities = ['0.25', '0.75', '1'].map((fraction) => scaleQuantity(quantity, fraction));
     const results = await Promise.all(
-      quantities.map((item) => afterMrktApi.simulate(state.symbol, item)),
+      quantities.map((item) => afterMrktApi.simulate(symbol, item)),
     );
+    if (requestId !== state.requestId || state.symbol !== symbol) return;
     renderSimulation(results.map((result) => result.data));
     setText(
       '#market-warning',
       `Simulation complete against the observed book. ${results[2].data.condition}.`,
     );
   } catch (error) {
+    if (requestId !== state.requestId || state.symbol !== symbol) return;
     setText('#market-warning', errorText(error));
   } finally {
-    if (button) {
+    if (button && requestId === state.requestId && state.symbol === symbol) {
       button.disabled = false;
       button.textContent = 'Run exit simulation';
     }
@@ -438,6 +438,7 @@ async function loadWorkspace(symbol) {
     state.eventData = events;
     renderContext(context);
   } catch (error) {
+    if (requestId !== state.requestId) return;
     setText('#context-status', errorText(error));
     setText('#market-warning', errorText(error));
     setCoverage('#coverage-market', 'Market data', 'unavailable');
@@ -468,6 +469,18 @@ function resetWorkspaceView(symbol) {
   setText('#event-availability', 'Availability · --');
   setText('#event-materiality', 'Materiality · --');
   setText('#analysis-status', 'Qwen analysis · loading…');
+  const evidenceDetail = $('#evidence-detail');
+  if (evidenceDetail) {
+    evidenceDetail.classList.remove('is-open');
+    evidenceDetail.setAttribute('aria-hidden', 'true');
+    evidenceDetail.textContent =
+      'Source URL, evidence spans, native-confirmation state, and analysis provenance will appear here.';
+  }
+  const evidenceToggle = $('#evidence-toggle');
+  if (evidenceToggle) {
+    evidenceToggle.setAttribute('aria-expanded', 'false');
+    evidenceToggle.textContent = 'View evidence spans and source URL';
+  }
   setText('#market-spread', '--');
   setText('#market-midpoint', '--');
   setText('#market-depth', '--');
@@ -482,9 +495,28 @@ function resetWorkspaceView(symbol) {
   $$('[data-exit-price]').forEach((element) => {
     element.textContent = '--';
   });
+  $$('.exit-corridor-line').forEach((element) => element.style.removeProperty('--fill'));
   setText('#exit-vwap', '--');
   setText('#exit-slippage', '--');
   setText('#exit-executable', '--');
+  const note = $('.exit-corridor-note');
+  if (note) {
+    note.innerHTML =
+      'Observed-book estimate, not guaranteed fill. The result is <strong>SIMULATED</strong>; live execution is disabled.';
+  }
+  $$('.workspace-preset').forEach((button) => button.classList.remove('is-active'));
+  const simulateButton = $('#simulate-button');
+  if (simulateButton) {
+    simulateButton.disabled = false;
+    simulateButton.textContent = 'Run exit simulation';
+  }
+  const provenanceDetails = $('#provenance-details');
+  if (provenanceDetails) {
+    provenanceDetails.hidden = true;
+    provenanceDetails.textContent = '';
+  }
+  const provenanceToggle = $('#provenance-toggle');
+  if (provenanceToggle) provenanceToggle.setAttribute('aria-expanded', 'false');
 }
 
 async function initWorkspace() {
