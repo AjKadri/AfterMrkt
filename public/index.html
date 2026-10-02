@@ -432,11 +432,20 @@
         overflow: hidden;
         border-top: 1px solid rgba(23, 26, 26, 0.12);
         border-bottom: 1px solid rgba(23, 26, 26, 0.12);
-        background: rgba(255, 255, 255, 0.32);
+        background:
+          linear-gradient(
+            90deg,
+            rgba(188, 236, 240, 0.38),
+            rgba(245, 242, 235, 0.66) 37%,
+            rgba(215, 210, 244, 0.3)
+          ),
+          rgba(255, 255, 255, 0.32);
       }
 
       .belt-label {
         position: absolute;
+        top: 0;
+        left: 0;
         z-index: 2;
         display: inline-flex;
         height: 32px;
@@ -444,7 +453,7 @@
         padding: 0 10px;
         border-right: 1px solid rgba(23, 26, 26, 0.12);
         color: rgba(23, 26, 26, 0.55);
-        background: rgba(245, 242, 235, 0.86);
+        background: transparent;
         font-size: 9px;
         font-weight: 700;
         letter-spacing: 0.07em;
