@@ -1697,13 +1697,21 @@
         border-bottom: 0;
       }
 
-      .landing-faq-panel article > div {
+      .landing-faq-panel article > button {
         display: flex;
+        width: 100%;
         align-items: center;
         justify-content: space-between;
         gap: 15px;
+        padding: 0;
+        border: 0;
+        color: inherit;
+        background: transparent;
+        cursor: pointer;
+        font: inherit;
         font-size: 13px;
         font-weight: 600;
+        text-align: left;
       }
 
       .landing-faq-panel b {
@@ -2665,6 +2673,7 @@
           <a href="#evidence">Evidence</a>
           <a href="#exit-lens">Exit Lens</a>
           <a href="#faq">FAQ</a>
+          <a href="/docs">Docs</a>
         </nav>
 
         <div class="nav-actions">
@@ -2708,7 +2717,7 @@
 
         <div class="market-belt" aria-label="Illustrative rToken prices, not live data">
           <div class="belt-viewport">
-            <span class="belt-label">EXAMPLE VALUES · NOT LIVE</span>
+            <span class="belt-label">NOT LIVE</span>
             <div class="belt-track">
               <span class="ticker-item"
                 ><span class="ticker-symbol">AAPLr</span><span class="ticker-price">$229.14</span
@@ -2883,20 +2892,34 @@
             </div>
             <div class="landing-faq-panel">
               <article>
-                <div><span>What does AfterMrkt analyze?</span><b>−</b></div>
+                <button type="button"><span>What does AfterMrkt actually do?</span><b>−</b></button>
                 <p>
-                  The rToken move since the regular U.S. close, market quality, verified events, and
-                  the observed-book cost of exiting your position.
+                  It brings together the rToken move, source-bound event evidence, market quality,
+                  and an observed-book exit estimate so you can read the decision clearly.
                 </p>
               </article>
               <article>
-                <div><span>Does it tell me what to buy or sell?</span><b>+</b></div>
+                <button type="button">
+                  <span>Does AfterMrkt tell me whether to buy or sell?</span><b>+</b>
+                </button>
+                <p hidden>
+                  No. AfterMrkt is decision support. It does not predict fair value or next-session
+                  direction, and it keeps the trading decision with you.
+                </p>
               </article>
               <article>
-                <div><span>Are the exit estimates guaranteed fills?</span><b>+</b></div>
+                <button type="button"><span>How does the Exit Lens work?</span><b>+</b></button>
+                <p hidden>
+                  Exit Lens applies deterministic spread, depth, VWAP, slippage, and fill math to an
+                  observed Bitget order book. It is an estimate, not a guaranteed fill.
+                </p>
               </article>
               <article>
-                <div><span>What happens when a source is unavailable?</span><b>+</b></div>
+                <button type="button"><span>What does Qwen do in AfterMrkt?</span><b>+</b></button>
+                <p hidden>
+                  Qwen reads source-bound event evidence only. It does not calculate market metrics
+                  or create trade decisions, and unavailable evidence stays visible as unavailable.
+                </p>
               </article>
             </div>
           </div>
@@ -2924,7 +2947,7 @@
                 <h4>Explore</h4>
                 <div class="footer-links">
                   <a href="/workspace">Decision lens</a><a href="/workspace#evidence">Evidence</a
-                  ><a href="/workspace#exit-lens">Exit Lens</a>
+                  ><a href="/workspace#exit-lens">Exit Lens</a><a href="/docs">Docs</a>
                 </div>
               </div>
               <div class="footer-column">

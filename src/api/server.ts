@@ -349,7 +349,9 @@ async function serveFrontend(
         ? 'workspace.html'
         : pathname === '/replay'
           ? 'replay.html'
-          : pathname.replace(/^\/+/, '');
+          : pathname === '/docs'
+            ? 'docs.html'
+            : pathname.replace(/^\/+/, '');
   if (!route || route.startsWith('api/')) return false;
   const root = resolve(frontendDirectory);
   const target = resolve(root, route);

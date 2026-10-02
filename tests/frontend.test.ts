@@ -6,11 +6,12 @@ async function readPublicFile(path: string): Promise<string> {
 }
 
 describe('integrated AfterMrkt frontend', () => {
-  it('ships the approved landing, workspace, replay, and local screenshot assets', async () => {
-    const [landing, workspace, replay, client, app] = await Promise.all([
+  it('ships the approved landing, workspace, replay, docs, and local screenshot assets', async () => {
+    const [landing, workspace, replay, docs, client, app] = await Promise.all([
       readPublicFile('index.html'),
       readPublicFile('workspace.html'),
       readPublicFile('replay.html'),
+      readPublicFile('docs.html'),
       readPublicFile('lib/aftermrkt-api.js'),
       readPublicFile('app.js'),
     ]);
@@ -19,10 +20,53 @@ describe('integrated AfterMrkt frontend', () => {
     expect(landing).toContain('/assets/bitget-stock-market.png');
     expect(workspace).toContain('data-page="workspace"');
     expect(replay).toContain('data-page="replay"');
+    expect(docs).toContain('data-page="docs"');
+    expect(docs).toContain('id="overview"');
+    expect(docs).toContain('id="how-it-works"');
+    expect(docs).toContain('id="decision-lens"');
+    expect(docs).toContain('id="market-data"');
+    expect(docs).toContain('id="evidence-qwen"');
+    expect(docs).toContain('id="exit-lens"');
+    expect(docs).toContain('id="live-replay"');
+    expect(docs).toContain('id="provenance"');
+    expect(docs).toContain('id="limitations"');
+    expect(docs).toContain('id="faq"');
+    expect(docs).toContain('id="glossary"');
     expect(client).toContain('/api/execution/simulations');
     expect(client).toContain('/api/replays');
     expect(app).toContain('RNVDAUSDT');
     expect(app).toContain('observed-book estimate');
+  });
+
+  it('keeps the homepage FAQ concise and the docs boundaries explicit', async () => {
+    const [landing, docs] = await Promise.all([
+      readPublicFile('index.html'),
+      readPublicFile('docs.html'),
+    ]);
+
+    expect(landing.match(/<span class="belt-label">([^<]+)<\/span>/)?.[1]).toBe('NOT LIVE');
+    expect(
+      [
+        ...landing.matchAll(
+          /<button type="button">[\s\S]*?<span>([^<]+)<\/span>[\s\S]*?<\/button>/g,
+        ),
+      ].map(([, question]) => question),
+    ).toEqual([
+      'What does AfterMrkt actually do?',
+      'Does AfterMrkt tell me whether to buy or sell?',
+      'How does the Exit Lens work?',
+      'What does Qwen do in AfterMrkt?',
+    ]);
+    expect(docs).toContain('The rToken price around the U.S. regular-session close');
+    expect(docs).toContain("not the native stock's closing price");
+    expect(docs).toContain('Qwen analyzes source-bound event evidence only');
+    expect(docs).toContain('does not calculate market metrics');
+    expect(docs).toContain('not a guaranteed fill');
+    expect(docs).toContain(
+      'Replay cannot use evidence that became available after the replay timestamp',
+    );
+    expect(docs).toContain('Live execution is disabled');
+    expect(docs).toContain('No wallet or account connection is part of the current MVP');
   });
 
   it('does not retain prototype workspace values or external workspace paths', async () => {

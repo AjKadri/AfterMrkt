@@ -39,7 +39,7 @@ Probe evidence is written to the ignored `.agent/evidence/` directory. Public Bi
 
 ## Local application
 
-Start the application with `npm run dev:server` and open `http://127.0.0.1:3000/`. The landing page is at `/`, the live workspace is at `/workspace`, and historical cases are at `/replay`. The browser calls the AfterMrkt API only. It never calls Bitget, SEC EDGAR, Qwen, or the MCP endpoint directly.
+Start the application with `npm run dev:server` and open `http://127.0.0.1:3000/`. The landing page is at `/`, the live workspace is at `/workspace`, product documentation is at `/docs`, and historical cases are at `/replay`. The browser calls the AfterMrkt API only. It never calls Bitget, SEC EDGAR, Qwen, or the MCP endpoint directly.
 
 The server exposes `GET /api/instruments`, `GET /api/instruments/:symbol/context`, `GET /api/instruments/:symbol/orderbook`, `POST /api/execution/simulations`, and the event and replay routes documented in [docs/frontend-api.md](docs/frontend-api.md). Replay routes load immutable snapshots only and make no provider calls. Simulation routes return observed-book estimates and never submit an order.
 
