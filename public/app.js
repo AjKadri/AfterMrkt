@@ -50,6 +50,13 @@ function formatMoney(value, fallback = '--') {
   return `$${numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
 }
 
+function formatMoneyForSummary(value, fallback = '--') {
+  if (value === null || value === undefined || value === '') return fallback;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return `$${numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function formatNumber(value, fallback = '--') {
   if (value === null || value === undefined || value === '') return fallback;
   const numeric = Number(value);
@@ -196,12 +203,11 @@ function renderContext(envelope) {
       : `Move unavailable: ${move?.reason ?? 'the rToken close reference is unavailable.'}`,
   );
 
-  const eventStatus = context.eventContext?.status ?? 'unavailable';
   setText(
     '#evidence-summary',
     context.eventContext?.qualifyingEventCount
       ? `${context.eventContext.qualifyingEventCount} qualifying source event found. Analysis remains separately attributed.`
-      : eventStatus,
+      : 'No qualifying source event was found in the checked post-close window.',
   );
   renderEventSummary(state.eventData, context);
 
@@ -251,7 +257,15 @@ function renderEventSummary(eventEnvelope, context) {
     setText('#event-source', 'Source · unavailable');
     setText('#event-availability', 'Availability · unavailable');
     setText('#event-materiality', 'Materiality · unavailable');
-    setText('#analysis-status', 'Qwen analysis · unavailable');
+    setText('#analysis-status', 'Qwen analysis · not applicable');
+    const detail = $('#evidence-detail');
+    if (detail) {
+      detail.replaceChildren(
+        document.createTextNode(
+          'Qwen was not run because no qualifying source event was available in the checked post-close window.',
+        ),
+      );
+    }
     return;
   }
   const sourceEvent = event ?? eventRef;
@@ -270,15 +284,20 @@ function renderEventSummary(eventEnvelope, context) {
     `Materiality · ${event?.analysis?.materiality ?? sourceEvent.materiality ?? 'pending'}`,
   );
   const analysis = event?.analysis ?? null;
+  const analysisStatus = analysis?.status ?? sourceEvent.analysisStatus ?? 'pending';
   setText(
     '#analysis-status',
-    `Qwen analysis · ${analysis?.status ?? sourceEvent.analysisStatus ?? 'pending'}`,
+    analysisStatus === 'unavailable'
+      ? 'Qwen analysis · unavailable (no validated result)'
+      : `Qwen analysis · ${analysisStatus}`,
   );
   const detail = $('#evidence-detail');
   if (detail && event) {
     detail.replaceChildren(
       document.createTextNode(
-        `${event.source?.label ?? 'Source'} · ${event.source?.url ?? 'URL unavailable'}`,
+        analysisStatus === 'unavailable'
+          ? 'Qwen did not produce a validated interpretation for this source event. The source fact remains separate.'
+          : `${event.source?.label ?? 'Source'} · ${event.source?.url ?? 'URL unavailable'}`,
       ),
       document.createElement('br'),
       document.createTextNode(
@@ -384,9 +403,42 @@ function renderSimulation(simulations) {
     '#exit-executable',
     full ? `${(Number(full.fillRatioWithin50Bps) * 100).toFixed(1)}%` : '--',
   );
+  renderExitExplanation(full);
   const note = $('.exit-corridor-note');
   if (note && full)
     note.innerHTML = `Observed-book estimate, not guaranteed fill. ${formatNumber(full.unfilledQuantity, '0')} ${full.symbol} remains unfilled against the captured depth. The result is <strong>SIMULATED</strong>; live execution is disabled.`;
+}
+
+function renderExitExplanation(simulation) {
+  const explanation = $('#exit-explanation');
+  if (!explanation) return;
+  explanation.replaceChildren();
+  const lead = document.createElement('strong');
+  lead.textContent = 'In plain English: ';
+  explanation.append(lead);
+  if (!simulation) {
+    explanation.append(
+      document.createTextNode(
+        'Enter a quantity and run the simulation to see how much the observed bids could absorb.',
+      ),
+    );
+    return;
+  }
+  const requested = formatNumber(simulation.requestedQuantity, '0');
+  const filled = formatNumber(simulation.filledQuantity, '0');
+  const unfilled = formatNumber(simulation.unfilledQuantity, '0');
+  const unfilledAmount = Number(simulation.unfilledQuantity);
+  const within50 = Number(simulation.fillRatioWithin50Bps);
+  const within50Text = Number.isFinite(within50) ? `${(within50 * 100).toFixed(1)}%` : '--';
+  const unfilledSentence =
+    Number.isFinite(unfilledAmount) && unfilledAmount > 0
+      ? `${unfilled} units would remain without a matching bid in this snapshot.`
+      : 'The captured bids could absorb the full requested amount.';
+  explanation.append(
+    document.createTextNode(
+      `For ${requested} units of ${simulation.symbol}, the visible buyers could buy about ${filled} units at an estimated average of ${formatMoneyForSummary(simulation.estimatedVwap)}. ${unfilledSentence} Only ${within50Text} of the requested amount could be sold within 0.50% of the midpoint. That is a simulated estimate, not a guaranteed fill.`,
+    ),
+  );
 }
 
 async function runSimulationSuite(quantity) {
@@ -499,6 +551,7 @@ function resetWorkspaceView(symbol) {
   setText('#exit-vwap', '--');
   setText('#exit-slippage', '--');
   setText('#exit-executable', '--');
+  renderExitExplanation(null);
   const note = $('.exit-corridor-note');
   if (note) {
     note.innerHTML =

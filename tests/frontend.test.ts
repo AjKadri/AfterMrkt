@@ -139,9 +139,10 @@ describe('integrated AfterMrkt frontend', () => {
   });
 
   it('makes the instrument selector and unit-based position input explicit', async () => {
-    const [workspace, client] = await Promise.all([
+    const [workspace, client, app] = await Promise.all([
       readPublicFile('workspace.html'),
       readPublicFile('lib/aftermrkt-api.js'),
+      readPublicFile('app.js'),
     ]);
 
     expect(workspace).toContain('class="instrument-picker"');
@@ -149,7 +150,13 @@ describe('integrated AfterMrkt frontend', () => {
     expect(workspace).toContain('class="workspace-quantity-unit">(units)</span');
     expect(workspace).toContain('placeholder="Enter units"');
     expect(workspace).toContain('aria-label="Position quantity in units"');
+    expect(workspace).toContain('id="exit-explanation"');
+    expect(workspace).toContain('In plain English:');
     expect(client).toContain('server_unreachable');
     expect(client).toContain('The local AfterMrkt server is not reachable.');
+    expect(app).toContain('Qwen analysis · not applicable');
+    expect(app).toContain('Qwen analysis · unavailable (no validated result)');
+    expect(app).toContain('Qwen was not run because no qualifying source event was available');
+    expect(app).toContain('Only ${within50Text} of the requested amount');
   });
 });
