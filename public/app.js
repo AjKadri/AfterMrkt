@@ -4,6 +4,7 @@ import { afterMrktApi, AfterMrktApiError } from './lib/aftermrkt-api.js';
 
 const page = document.body.dataset.page;
 const state = { symbol: null, context: null, eventData: null, requestId: 0 };
+const MARKET_BELT_REFRESH_MS = 30_000;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -93,6 +94,102 @@ function errorText(error) {
   return error instanceof AfterMrktApiError
     ? error.message
     : 'The AfterMrkt server could not provide this section.';
+}
+
+function createTickerItem(instrument, duplicate = false) {
+  const item = document.createElement('span');
+  item.className = 'ticker-item';
+  if (duplicate) item.setAttribute('aria-hidden', 'true');
+
+  const symbol = document.createElement('span');
+  symbol.className = 'ticker-symbol';
+  symbol.textContent = instrument.nativeTicker ?? instrument.providerSymbol;
+
+  const price = document.createElement('span');
+  price.className = 'ticker-price';
+  price.textContent = formatMoney(instrument.lastPrice);
+
+  const change = document.createElement('span');
+  const numericChange = Number(instrument.moveSinceNativeClosePercent);
+  change.className = 'ticker-change';
+  if (Number.isFinite(numericChange) && numericChange < 0) change.classList.add('down');
+  change.textContent = formatPercent(instrument.moveSinceNativeClosePercent, '—');
+
+  const freshness = instrument.freshness?.state ?? 'unavailable';
+  item.title = `${instrument.providerSymbol} · movement since U.S. regular close · ${freshness}`;
+  item.setAttribute(
+    'aria-label',
+    `${instrument.providerSymbol}, ${price.textContent}; ${change.textContent} since U.S. regular close; data ${freshness}`,
+  );
+  item.append(symbol, price, change);
+  return item;
+}
+
+function renderMarketBeltUnavailable(message) {
+  const belt = $('.market-belt');
+  const label = $('#market-belt-label');
+  const track = $('#market-belt-track');
+  if (!belt || !label || !track) return;
+
+  label.textContent = 'LIVE · UNAVAILABLE';
+  belt.setAttribute('aria-label', `Live rToken prices unavailable: ${message}`);
+  belt.title = message;
+  track.classList.add('is-static');
+  const item = document.createElement('span');
+  item.className = 'ticker-item ticker-message';
+  item.textContent = 'Live prices unavailable';
+  track.replaceChildren(item);
+}
+
+function renderMarketBelt(envelope) {
+  const belt = $('.market-belt');
+  const label = $('#market-belt-label');
+  const track = $('#market-belt-track');
+  if (!belt || !label || !track) return;
+
+  const instruments = (envelope?.data?.instruments ?? []).filter(
+    (instrument) =>
+      instrument &&
+      instrument.lastPrice !== null &&
+      instrument.lastPrice !== undefined &&
+      (instrument.nativeTicker || instrument.providerSymbol),
+  );
+  if (!instruments.length) {
+    renderMarketBeltUnavailable('No live instrument prices were returned.');
+    return;
+  }
+
+  const freshnessStates = new Set(instruments.map((instrument) => instrument.freshness?.state));
+  const status = freshnessStates.has('fresh')
+    ? 'LIVE · CLOSE MOVE'
+    : freshnessStates.has('stale')
+      ? 'STALE · CLOSE MOVE'
+      : 'LIVE · UNAVAILABLE';
+  label.textContent = status;
+  belt.setAttribute(
+    'aria-label',
+    `${status} rToken prices and movement since the U.S. regular close`,
+  );
+  belt.removeAttribute('title');
+  track.classList.toggle('is-static', status === 'LIVE · UNAVAILABLE');
+  track.replaceChildren(
+    ...instruments.map((instrument) => createTickerItem(instrument)),
+    ...instruments.map((instrument) => createTickerItem(instrument, true)),
+  );
+}
+
+async function refreshMarketBelt() {
+  try {
+    const envelope = await afterMrktApi.getInstruments(5);
+    renderMarketBelt(envelope);
+  } catch (error) {
+    renderMarketBeltUnavailable(errorText(error));
+  }
+}
+
+async function initMarketBelt() {
+  await refreshMarketBelt();
+  window.setInterval(() => void refreshMarketBelt(), MARKET_BELT_REFRESH_MS);
 }
 
 function setCoverage(selector, label, status) {
@@ -708,6 +805,9 @@ async function initReplay() {
   }
 }
 
-if (page === 'landing') bindLanding();
+if (page === 'landing') {
+  bindLanding();
+  void initMarketBelt();
+}
 if (page === 'workspace') void initWorkspace();
 if (page === 'replay') void initReplay();

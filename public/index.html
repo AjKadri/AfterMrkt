@@ -450,10 +450,11 @@
         display: inline-flex;
         height: 32px;
         align-items: center;
+        width: 184px;
         padding: 0 10px;
         border-right: 1px solid rgba(23, 26, 26, 0.12);
         color: rgba(23, 26, 26, 0.55);
-        background: transparent;
+        background: rgba(245, 242, 235, 0.96);
         font-size: 9px;
         font-weight: 700;
         letter-spacing: 0.07em;
@@ -473,6 +474,11 @@
         height: 32px;
         align-items: center;
         animation: belt 32s linear infinite;
+      }
+
+      .belt-track.is-static {
+        width: 100%;
+        animation: none;
       }
 
       .ticker-item {
@@ -501,6 +507,11 @@
 
       .ticker-change.down {
         color: #af5541;
+      }
+
+      .ticker-message {
+        color: rgba(23, 26, 26, 0.58);
+        font-size: 10px;
       }
 
       @keyframes belt {
@@ -2725,50 +2736,14 @@
           </div>
         </section>
 
-        <div class="market-belt" aria-label="Illustrative rToken prices, not live data">
+        <div
+          class="market-belt"
+          aria-label="Live rToken prices and movement since the U.S. regular close"
+        >
           <div class="belt-viewport">
-            <span class="belt-label">NOT LIVE</span>
-            <div class="belt-track">
-              <span class="ticker-item"
-                ><span class="ticker-symbol">AAPLr</span><span class="ticker-price">$229.14</span
-                ><span class="ticker-change">+1.8%</span></span
-              >
-              <span class="ticker-item"
-                ><span class="ticker-symbol">NVDAr</span><span class="ticker-price">$181.62</span
-                ><span class="ticker-change">+2.4%</span></span
-              >
-              <span class="ticker-item"
-                ><span class="ticker-symbol">TSLAr</span><span class="ticker-price">$333.09</span
-                ><span class="ticker-change down">−0.6%</span></span
-              >
-              <span class="ticker-item"
-                ><span class="ticker-symbol">MSFTr</span><span class="ticker-price">$511.38</span
-                ><span class="ticker-change">+0.9%</span></span
-              >
-              <span class="ticker-item"
-                ><span class="ticker-symbol">AMZNr</span><span class="ticker-price">$226.71</span
-                ><span class="ticker-change">+1.2%</span></span
-              >
-              <span class="ticker-item"
-                ><span class="ticker-symbol">AAPLr</span><span class="ticker-price">$229.14</span
-                ><span class="ticker-change">+1.8%</span></span
-              >
-              <span class="ticker-item"
-                ><span class="ticker-symbol">NVDAr</span><span class="ticker-price">$181.62</span
-                ><span class="ticker-change">+2.4%</span></span
-              >
-              <span class="ticker-item"
-                ><span class="ticker-symbol">TSLAr</span><span class="ticker-price">$333.09</span
-                ><span class="ticker-change down">−0.6%</span></span
-              >
-              <span class="ticker-item"
-                ><span class="ticker-symbol">MSFTr</span><span class="ticker-price">$511.38</span
-                ><span class="ticker-change">+0.9%</span></span
-              >
-              <span class="ticker-item"
-                ><span class="ticker-symbol">AMZNr</span><span class="ticker-price">$226.71</span
-                ><span class="ticker-change">+1.2%</span></span
-              >
+            <span id="market-belt-label" class="belt-label">LIVE · CLOSE MOVE</span>
+            <div id="market-belt-track" class="belt-track" aria-live="polite">
+              <span class="ticker-item ticker-message">Loading live prices…</span>
             </div>
           </div>
         </div>

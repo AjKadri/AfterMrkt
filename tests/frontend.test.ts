@@ -45,7 +45,11 @@ describe('integrated AfterMrkt frontend', () => {
       readPublicFile('app.js'),
     ]);
 
-    expect(landing.match(/<span class="belt-label">([^<]+)<\/span>/)?.[1]).toBe('NOT LIVE');
+    expect(landing).toContain('id="market-belt-track"');
+    expect(landing).toContain('Loading live prices…');
+    expect(landing).not.toContain('NOT LIVE');
+    expect(landing).not.toContain('$229.14');
+    expect(landing).not.toContain('AAPLr');
     expect(
       [...landing.matchAll(/<button[\s\S]*?>\s*<span>([^<]+)<\/span>[\s\S]*?<\/button>/g)].map(
         ([, question]) => question,
@@ -82,6 +86,9 @@ describe('integrated AfterMrkt frontend', () => {
     expect(app).toContain('answer.hidden = !open');
     expect(app).toContain("button.setAttribute('aria-expanded', String(open))");
     expect(app).toContain("icon.textContent = open ? '−' : '+'");
+    expect(app).toContain('afterMrktApi.getInstruments(5)');
+    expect(app).toContain('moveSinceNativeClosePercent');
+    expect(app).toContain('Live prices unavailable');
     expect(docs).toContain('The rToken price around the U.S. regular-session close');
     expect(docs).toContain("not the native stock's closing price");
     expect(docs).toContain('Qwen analyzes source-bound event evidence only');
