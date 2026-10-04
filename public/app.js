@@ -510,9 +510,6 @@ function renderExitExplanation(simulation) {
   const explanation = $('#exit-explanation');
   if (!explanation) return;
   explanation.replaceChildren();
-  const lead = document.createElement('strong');
-  lead.textContent = 'In plain English: ';
-  explanation.append(lead);
   if (!simulation) {
     explanation.append(
       document.createTextNode(
@@ -527,13 +524,20 @@ function renderExitExplanation(simulation) {
   const unfilledAmount = Number(simulation.unfilledQuantity);
   const within50 = Number(simulation.fillRatioWithin50Bps);
   const within50Text = Number.isFinite(within50) ? `${(within50 * 100).toFixed(1)}%` : '--';
+  const noFillReason =
+    simulation.reasons?.[0]?.metric === 'bookAvailability'
+      ? 'the captured order book had no executable two-sided market'
+      : `the captured order book could not provide a fill (${simulation.reasons?.[0]?.detail ?? 'the book was unavailable'})`;
+  const fillSentence = simulation.estimatedVwap
+    ? `the visible buyers could buy about ${filled} units at an estimated average of ${formatMoneyForSummary(simulation.estimatedVwap)}.`
+    : `the visible buyers could buy about ${filled} units, but no average sale price is available because ${noFillReason}.`;
   const unfilledSentence =
     Number.isFinite(unfilledAmount) && unfilledAmount > 0
       ? `${unfilled} units would remain without a matching bid in this snapshot.`
       : 'The captured bids could absorb the full requested amount.';
   explanation.append(
     document.createTextNode(
-      `For ${requested} units of ${simulation.symbol}, the visible buyers could buy about ${filled} units at an estimated average of ${formatMoneyForSummary(simulation.estimatedVwap)}. ${unfilledSentence} Only ${within50Text} of the requested amount could be sold within 0.50% of the midpoint. That is a simulated estimate, not a guaranteed fill.`,
+      `For ${requested} units of ${simulation.symbol}, ${fillSentence} ${unfilledSentence} Only ${within50Text} of the requested amount could be sold within 0.50% of the midpoint. That is a simulated estimate, not a guaranteed fill.`,
     ),
   );
 }

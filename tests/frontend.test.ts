@@ -158,12 +158,15 @@ describe('integrated AfterMrkt frontend', () => {
     expect(workspace).toContain('placeholder="Enter units"');
     expect(workspace).toContain('aria-label="Position quantity in units"');
     expect(workspace).toContain('id="exit-explanation"');
-    expect(workspace).toContain('In plain English:');
+    expect(workspace).not.toContain('In plain English:');
     expect(client).toContain('server_unreachable');
     expect(client).toContain('The local AfterMrkt server is not reachable.');
     expect(app).toContain('Qwen analysis · not applicable');
     expect(app).toContain('Qwen analysis · unavailable (no validated result)');
     expect(app).toContain('Qwen was not run because no qualifying source event was available');
+    expect(app).toContain('no average sale price is available because');
+    expect(app).toContain('the captured order book had no executable two-sided market');
+    expect(app).not.toContain("lead.textContent = 'In plain English: '");
     expect(app).toContain('Only ${within50Text} of the requested amount');
   });
 });
