@@ -8,11 +8,7 @@
       content="AfterMrkt decision workspace for Bitget tokenized U.S. stocks."
     />
     <title>AfterMrkt Workspace | Decision Lens</title>
-    <link
-      rel="icon"
-      type="image/svg+xml"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23121414'/%3E%3Cpath d='M16 42 27 21l8 13 8-13 5 21h-9l-2-9-6 9h-7l-4-8-4 8z' fill='%23a9f87a'/%3E%3C/svg%3E"
-    />
+    <link rel="icon" type="image/svg+xml" href="/assets/aftermrkt-mark.svg" />
     <style>
       :root {
         --ink: #171a1a;
@@ -73,11 +69,21 @@
       }
 
       .brand-mark {
-        width: 18px;
-        height: 18px;
-        border-radius: 5px;
-        background: linear-gradient(135deg, var(--mint), var(--green));
-        transform: rotate(17deg);
+        display: grid;
+        width: 22px;
+        height: 22px;
+        place-items: center;
+        border-radius: 7px;
+        color: var(--black);
+        background: var(--mint);
+        font-size: 12px;
+        font-weight: 900;
+        transform: rotate(-8deg);
+      }
+
+      .brand-mark::before {
+        content: '↗';
+        transform: rotate(8deg);
       }
 
       .nav-links {

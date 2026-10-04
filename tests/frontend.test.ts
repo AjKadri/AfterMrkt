@@ -18,9 +18,13 @@ describe('integrated AfterMrkt frontend', () => {
 
     expect(landing).toContain('Know the move. Know');
     expect(landing).toContain('/assets/bitget-stock-market.png');
+    expect(landing).toContain('href="/assets/aftermrkt-mark.svg"');
     expect(workspace).toContain('data-page="workspace"');
+    expect(workspace).toContain('href="/assets/aftermrkt-mark.svg"');
     expect(replay).toContain('data-page="replay"');
+    expect(replay).toContain('href="/assets/aftermrkt-mark.svg"');
     expect(docs).toContain('data-page="docs"');
+    expect(docs).toContain('href="/assets/aftermrkt-mark.svg"');
     expect(docs).toContain('id="overview"');
     expect(docs).toContain('id="how-it-works"');
     expect(docs).toContain('id="decision-lens"');
@@ -36,6 +40,24 @@ describe('integrated AfterMrkt frontend', () => {
     expect(client).toContain('/api/replays');
     expect(app).toContain('RNVDAUSDT');
     expect(app).toContain('observed-book estimate');
+  });
+
+  it('keeps the shared landing logo on every page header', async () => {
+    const [landing, workspace, replay, docs, mark] = await Promise.all([
+      readPublicFile('index.html'),
+      readPublicFile('workspace.html'),
+      readPublicFile('replay.html'),
+      readPublicFile('docs.html'),
+      readPublicFile('assets/aftermrkt-mark.svg'),
+    ]);
+    const pages = `${landing}\n${workspace}\n${replay}\n${docs}`;
+
+    expect(mark).toContain('fill="#bcecf0"');
+    expect(mark).toContain('stroke="#101820"');
+    expect(pages.match(/href="\/assets\/aftermrkt-mark\.svg"/g)).toHaveLength(4);
+    expect(workspace).toContain("content: '↗'");
+    expect(workspace).toContain('width: 22px;');
+    expect(workspace).toContain('height: 22px;');
   });
 
   it('keeps the homepage FAQ concise and the docs boundaries explicit', async () => {
