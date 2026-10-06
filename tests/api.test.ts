@@ -11,6 +11,8 @@ import { sha256 } from '../src/lib/hash.js';
 import type { EventAnalysis, SourceEvent } from '../src/contracts/events.js';
 import type { QwenCall } from '../src/adapters/qwen/index.js';
 import type { DecisionStressTestClient } from '../src/domain/decision-stress-test.js';
+import type { WorkspaceQuestionClient } from '../src/domain/workspace-question.js';
+import { InMemoryExecutionStore } from '../src/persistence/execution-store.js';
 import { TEST_FIXTURE_SOURCE, testMarketSnapshotInput, testSnapshot } from './fixtures/market.js';
 
 const NOW = new Date('2026-09-29T22:00:00.000Z');
@@ -332,6 +334,221 @@ describe('AfterMrkt API contracts', () => {
       ).toMatchObject({
         data: { result: { decision: { executionStatus: 'execution_unavailable' } } },
       });
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
+
+  it('serves a read-only, source-grounded workspace research answer', async () => {
+    const snapshots = new InMemorySnapshotStore();
+    const executionStore = new InMemoryExecutionStore();
+    let calls = 0;
+    let observedFacts: Array<{ id: string; summary: string }> = [];
+    const assistant: WorkspaceQuestionClient = {
+      model: 'qwen3.8-max',
+      askWorkspaceQuestion: async (input) => {
+        calls += 1;
+        observedFacts = input.facts;
+        const asksAboutLiquidity = /liquidity|exit/i.test(input.question);
+        return {
+          content: JSON.stringify({
+            status: asksAboutLiquidity ? 'answered' : 'insufficient_evidence',
+            topic: asksAboutLiquidity ? 'liquidity' : 'evidence',
+            answer: asksAboutLiquidity
+              ? 'The observed book and exit simulation provide the available liquidity context.'
+              : 'No verified source event is available to attribute this move.',
+            supportingFactIds: asksAboutLiquidity
+              ? ['liquidity_condition', 'exit_fill_ratio']
+              : ['event_status'],
+            uncertainties: asksAboutLiquidity
+              ? ['The observed book can change before a later review.']
+              : ['The source event record is unavailable in this context.'],
+            model: 'qwen3.8-max',
+            promptVersion: 'workspace-question-v1',
+          }),
+          providerReportedModel: 'qwen3.8-max',
+        } as QwenCall;
+      },
+    };
+    const server = createApiServer({
+      marketData: testProvider(),
+      snapshots,
+      executionStore,
+      assistant,
+      now: () => NOW,
+    });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('test server did not expose a port');
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    try {
+      const response = await fetch(`${baseUrl}/api/assistant/query`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          symbol: 'RMUUSDT',
+          question: 'What verified evidence explains this move?',
+        }),
+      });
+      const body = (await response.json()) as {
+        data: {
+          status: string;
+          answer: string;
+          supportingFactIds: string[];
+          supportingFacts: Array<{ id: string; value: string | null }>;
+          contextTimestamp: string;
+          inputHash: string;
+          sources: unknown[];
+        };
+      };
+      expect(response.status).toBe(200);
+      expect(body.data).toMatchObject({
+        status: 'insufficient_evidence',
+        supportingFactIds: ['event_status'],
+        contextTimestamp: NOW.toISOString(),
+        inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      expect(body.data.answer).not.toMatch(/\d/);
+      expect(body.data.supportingFacts).toEqual([
+        expect.objectContaining({ id: 'event_status', value: 'insufficient-event-evidence' }),
+      ]);
+      expect(body.data.sources.length).toBeGreaterThan(0);
+      expect(observedFacts.find((fact) => fact.id === 'current_price')?.summary).not.toMatch(/100/);
+      expect(observedFacts.find((fact) => fact.id === 'event_status')?.summary).toContain(
+        'insufficient-event-evidence',
+      );
+      expect(await executionStore.listPositions()).toHaveLength(0);
+      expect(await executionStore.listAudit()).toHaveLength(0);
+
+      const liquidity = await fetch(`${baseUrl}/api/assistant/query`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          symbol: 'RMUUSDT',
+          question: 'What does the observed book say about exit liquidity?',
+          quantity: '5',
+        }),
+      });
+      const liquidityBody = (await liquidity.json()) as {
+        data: {
+          status: string;
+          supportingFactIds: string[];
+          supportingFacts: Array<{ id: string }>;
+        };
+      };
+      expect(liquidity.status).toBe(200);
+      expect(liquidityBody.data).toMatchObject({
+        status: 'answered',
+        supportingFactIds: ['liquidity_condition', 'exit_fill_ratio'],
+      });
+      expect(liquidityBody.data.supportingFacts.map((fact) => fact.id)).toEqual([
+        'liquidity_condition',
+        'exit_fill_ratio',
+      ]);
+
+      const outOfScope = await fetch(`${baseUrl}/api/assistant/query`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ symbol: 'RMUUSDT', question: 'Write a poem about rain.' }),
+      });
+      expect(outOfScope.status).toBe(200);
+      expect(((await outOfScope.json()) as { data: { status: string } }).data.status).toBe(
+        'out_of_scope',
+      );
+      expect(calls).toBe(2);
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
+
+  it('rejects assistant snapshot and decision symbol mismatches before Qwen', async () => {
+    const snapshots = new InMemorySnapshotStore();
+    const assistant: WorkspaceQuestionClient = {
+      model: 'qwen3.8-max',
+      askWorkspaceQuestion: async () => {
+        throw new Error('assistant should not be called for a mismatch');
+      },
+    };
+    const qwen: DecisionStressTestClient = {
+      model: 'qwen3.8-max',
+      stressTestDecision: async () =>
+        ({
+          content: JSON.stringify({
+            immediateExit: 'The book presents a trade-off.',
+            evidence: 'The deterministic simulation is the evidence.',
+            mainUncertainty: 'The next book is unknown.',
+            considerations: ['Review the supplied facts.'],
+            model: 'qwen3.8-max',
+            promptVersion: 'decision-stress-test-v1',
+          }),
+          providerReportedModel: 'qwen3.8-max',
+        }) as QwenCall,
+    };
+    const server = createApiServer({
+      marketData: testProvider(),
+      snapshots,
+      qwen,
+      assistant,
+      now: () => NOW,
+    });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('test server did not expose a port');
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    try {
+      const orderBookResponse = await fetch(`${baseUrl}/api/instruments/RMUUSDT/orderbook`);
+      const orderBookBody = (await orderBookResponse.json()) as {
+        data: { snapshot: { snapshotId: string } };
+      };
+      const snapshotMismatch = await fetch(`${baseUrl}/api/assistant/query`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          symbol: 'OTHER',
+          question: 'What does liquidity say about this exit?',
+          snapshotId: orderBookBody.data.snapshot.snapshotId,
+        }),
+      });
+      expect(snapshotMismatch.status).toBe(400);
+
+      const positionResponse = await fetch(`${baseUrl}/api/execution/positions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ symbol: 'RMUUSDT', quantity: '5' }),
+      });
+      const positionBody = (await positionResponse.json()) as {
+        data: { position: { positionId: string } };
+      };
+      const decisionResponse = await fetch(`${baseUrl}/api/execution/decisions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          positionId: positionBody.data.position.positionId,
+          symbol: 'RMUUSDT',
+          decision: 'hold',
+          requestedQuantity: '5',
+          simulationSnapshotId: orderBookBody.data.snapshot.snapshotId,
+        }),
+      });
+      const decisionBody = (await decisionResponse.json()) as {
+        data: { decision: { decisionId: string } };
+      };
+      const decisionMismatch = await fetch(`${baseUrl}/api/assistant/query`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          symbol: 'OTHER',
+          question: 'What is the decision context?',
+          decisionId: decisionBody.data.decision.decisionId,
+        }),
+      });
+      expect(decisionMismatch.status).toBe(400);
     } finally {
       server.close();
       await once(server, 'close');

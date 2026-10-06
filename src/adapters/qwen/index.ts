@@ -9,9 +9,12 @@ export {
   QWEN_EVENT_JSON_SCHEMA,
   QWEN_DECISION_STRESS_JSON_SCHEMA,
   QWEN_DECISION_STRESS_PROMPT_VERSION,
+  QWEN_WORKSPACE_QUESTION_JSON_SCHEMA,
+  QWEN_WORKSPACE_QUESTION_PROMPT_VERSION,
   QwenClient,
   parseQwenDecisionStressTest,
   parseQwenEvent,
+  parseQwenWorkspaceQuestion,
 } from './client.js';
 export type {
   QwenCall,
@@ -21,5 +24,6 @@ export type {
   QwenTokenAccounting,
   QwenEvidencePacket,
   QwenDecisionStressTestPacket,
+  QwenWorkspaceQuestionPacket,
   QwenThinkingMode,
 } from './client.js';

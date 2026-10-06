@@ -45,6 +45,20 @@ export const QwenDecisionStressTestSchema = z
 
 export type QwenDecisionStressTest = z.infer<typeof QwenDecisionStressTestSchema>;
 
+export const QwenWorkspaceQuestionSchema = z
+  .object({
+    status: z.enum(['answered', 'insufficient_evidence', 'out_of_scope']),
+    topic: z.enum(['move', 'evidence', 'liquidity', 'exit', 'limitations', 'general_context']),
+    answer: z.string().min(1).max(900),
+    supportingFactIds: z.array(z.string().min(1)).max(8),
+    uncertainties: z.array(z.string().min(1).max(240)).max(3),
+    model: z.string().min(1),
+    promptVersion: z.string().min(1),
+  })
+  .strict();
+
+export type QwenWorkspaceQuestion = z.infer<typeof QwenWorkspaceQuestionSchema>;
+
 export const QwenUsageSchema = z
   .object({
     prompt_tokens: z.number().optional(),

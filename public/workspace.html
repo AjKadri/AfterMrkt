@@ -761,6 +761,128 @@
         color: #f4f7f8;
       }
 
+      .assistant-panel {
+        margin-top: 13px;
+        padding: 18px 20px;
+        border: 1px solid rgba(23, 26, 26, 0.12);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.72);
+      }
+      .assistant-panel-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 18px;
+      }
+      .assistant-panel-kicker {
+        margin: 0 0 7px;
+        color: var(--green-deep);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .assistant-panel h3 {
+        margin: 0;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: 26px;
+        font-weight: 400;
+        letter-spacing: -0.06em;
+      }
+      .assistant-panel-head > p {
+        max-width: 470px;
+        margin: 3px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .assistant-form {
+        display: flex;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .assistant-form input {
+        min-width: 0;
+        flex: 1;
+        min-height: 40px;
+        padding: 0 13px;
+        border: 1px solid rgba(23, 26, 26, 0.16);
+        border-radius: 8px;
+        color: var(--ink);
+        background: #fff;
+        font-size: 13px;
+      }
+      .assistant-submit,
+      .assistant-example {
+        min-height: 38px;
+        padding: 0 13px;
+        border: 1px solid rgba(23, 26, 26, 0.16);
+        border-radius: 999px;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.82);
+        cursor: pointer;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .assistant-submit {
+        color: #f4f7f8;
+        border-color: var(--black);
+        background: var(--black);
+        white-space: nowrap;
+      }
+      .assistant-submit:disabled {
+        cursor: wait;
+        opacity: 0.6;
+      }
+      .assistant-examples {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-top: 9px;
+      }
+      .assistant-example {
+        min-height: 30px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .assistant-result {
+        display: grid;
+        gap: 9px;
+        margin-top: 15px;
+        padding: 14px 15px;
+        border-radius: 10px;
+        color: #17303b;
+        background: #e4f4f2;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .assistant-result[hidden] {
+        display: none;
+      }
+      .assistant-result.unavailable,
+      .assistant-result.out-of-scope {
+        color: #74561b;
+        background: #f2e0ae;
+      }
+      .assistant-result p,
+      .assistant-result h4,
+      .assistant-result ul {
+        margin: 0;
+      }
+      .assistant-result h4 {
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .assistant-result ul {
+        padding-left: 18px;
+      }
+      .assistant-provenance {
+        color: rgba(23, 48, 59, 0.68);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10px;
+      }
+
       .decision-panel {
         margin-top: 13px;
         padding: 20px;
@@ -1306,9 +1428,13 @@
         .exit-corridor-row {
           grid-template-columns: 145px minmax(0, 1fr) 63px;
         }
+        .assistant-panel-head,
         .decision-panel-head,
         .decision-review-head {
           align-items: flex-start;
+          flex-direction: column;
+        }
+        .assistant-form {
           flex-direction: column;
         }
         .decision-review-grid {
@@ -1592,6 +1718,65 @@
             >
           </div>
         </article>
+
+        <section class="assistant-panel" id="ask-aftermrkt" aria-labelledby="assistant-title">
+          <div class="assistant-panel-head">
+            <div>
+              <p class="assistant-panel-kicker">Ask AfterMrkt</p>
+              <h3 id="assistant-title">Research this context</h3>
+            </div>
+            <p>
+              Ask one question about this instrument, its evidence, liquidity, exit simulation, or
+              known limitations. Qwen explains supplied facts only. Numbers stay deterministic.
+            </p>
+          </div>
+          <form class="assistant-form" id="assistant-form">
+            <input
+              id="assistant-question"
+              type="text"
+              maxlength="600"
+              autocomplete="off"
+              placeholder="What explains the current move?"
+              aria-label="Ask AfterMrkt a question"
+            />
+            <button class="assistant-submit" id="assistant-submit" type="submit">
+              Ask AfterMrkt
+            </button>
+          </form>
+          <div class="assistant-examples" aria-label="Example questions">
+            <button
+              class="assistant-example"
+              type="button"
+              data-question="What verified evidence is available for this move?"
+            >
+              Evidence
+            </button>
+            <button
+              class="assistant-example"
+              type="button"
+              data-question="What does the observed book say about exit liquidity?"
+            >
+              Exit liquidity
+            </button>
+            <button
+              class="assistant-example"
+              type="button"
+              data-question="What remains unknown in this context?"
+            >
+              Uncertainties
+            </button>
+          </div>
+          <div class="assistant-result" id="assistant-result" hidden aria-live="polite">
+            <p id="assistant-status">QWEN · waiting</p>
+            <p id="assistant-answer"></p>
+            <div id="assistant-grounding" hidden>
+              <h4>Grounded in</h4>
+              <ul id="assistant-grounding-list"></ul>
+            </div>
+            <ul id="assistant-uncertainties" hidden></ul>
+            <p class="assistant-provenance" id="assistant-provenance"></p>
+          </div>
+        </section>
 
         <section
           class="decision-panel"

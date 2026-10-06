@@ -18,6 +18,10 @@ import type {
 import type { EventReplayCase, ReplayCase, ReplaySourceReference } from '../persistence/types.js';
 import type { DecisionStressTestResult } from '../domain/decision-stress-test.js';
 import type { TraderDecision } from '../domain/execution-types.js';
+import type {
+  WorkspaceGroundingFact,
+  WorkspaceQuestionResult,
+} from '../domain/workspace-question.js';
 
 export const EXECUTION_CAPABILITIES = Object.freeze({
   simulation: 'available',
@@ -167,6 +171,11 @@ export type ProductContext = {
   warnings: string[];
   sources: ProductSourceReference[];
   executionCapabilities: ExecutionCapabilities;
+};
+
+export type ProductWorkspaceQuestion = WorkspaceQuestionResult & {
+  supportingFacts: WorkspaceGroundingFact[];
+  sources: ProductSourceReference[];
 };
 
 export type ProductSimulation = {

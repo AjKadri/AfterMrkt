@@ -53,6 +53,8 @@ function userMessage(code, fallback) {
     event_evidence_unavailable: 'Event evidence is unavailable.',
     simulation_invalid_quantity: 'Enter a valid positive position quantity.',
     simulation_book_unavailable: 'The observed order book is unavailable for simulation.',
+    assistant_unavailable:
+      'Contextual research is unavailable. The deterministic workspace remains available.',
     replay_not_found: 'That replay is unavailable.',
     replay_unavailable: 'Replay data is unavailable.',
   };
@@ -92,6 +94,9 @@ export const afterMrktApi = {
         ...(includeDecisionStressTest ? { includeDecisionStressTest: true } : {}),
       }),
     );
+  },
+  askWorkspace(input) {
+    return request('/api/assistant/query', jsonOptions(input));
   },
   createManualPosition(symbol, quantity) {
     return request('/api/execution/positions', jsonOptions({ symbol, quantity }));

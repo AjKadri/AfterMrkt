@@ -120,11 +120,28 @@ export const TraderDecisionRequestSchema = z
   })
   .strict();
 
+export const AssistantQueryRequestSchema = z
+  .object({
+    symbol: z.string().trim().min(1),
+    question: z.string().trim().min(1).max(600),
+    snapshotId: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    quantity: DecimalStringSchema.optional(),
+    decisionId: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+  })
+  .strict();
+
 export type ExecutionSimulationRequest = z.infer<typeof ExecutionSimulationRequestSchema>;
 export type ManualPositionRequest = z.infer<typeof ManualPositionRequestSchema>;
 export type ExecutionIntentRequest = z.infer<typeof ExecutionIntentRequestSchema>;
 export type ExecutionConfirmationRequest = z.infer<typeof ExecutionConfirmationRequestSchema>;
 export type TraderDecisionRequest = z.infer<typeof TraderDecisionRequestSchema>;
+export type AssistantQueryRequest = z.infer<typeof AssistantQueryRequestSchema>;
 
 export type ApiMode = 'LIVE' | 'REPLAY';
 

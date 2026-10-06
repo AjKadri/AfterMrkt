@@ -195,6 +195,22 @@ Add `"includeDecisionStressTest": true` to one successful live simulation reques
 
 `status: "unavailable"` is an honest degraded state when Qwen is not configured, unreachable, or returns invalid/recommendation language. A missing qualifying SEC event does not disable the stress test. The event status is passed as `not_applicable`, while the market and simulation facts remain available. Qwen produces trade-off prose without numeric literals. The configured model and any provider-reported model must agree before prose is marked available. Deterministic AfterMrkt logic owns every financial value and the trader owns the decision.
 
+## Contextual research
+
+`POST /api/assistant/query`
+
+The workspace Ask AfterMrkt panel is a single-turn research layer for the currently selected instrument. The browser sends only the provider symbol, a bounded question, and optional server-issued `snapshotId`, quantity, or `decisionId` identifiers. The server reconstructs the trusted context, rejects symbol mismatches, and never mutates positions, simulations, decisions, or execution state.
+
+```json
+{
+  "symbol": "RNVDAUSDT",
+  "question": "What does the observed book say about exit liquidity?",
+  "quantity": "0.05"
+}
+```
+
+The response includes a deterministic fact registry with stable IDs for instrument, session, move, market, liquidity, depth, event status and validated event facts, native confirmation, limitations, exit values, and decision context. Numeric values are returned as typed facts and rendered by deterministic UI code. Qwen receives qualitative fact summaries, returns strict JSON, and its answer and uncertainties must contain no numeric literals or recommendation language. Unknown fact IDs, prompt injection, model mismatches, unavailable source values, and provider failures are quarantined as `status: "unavailable"`. Questions outside the current context return `status: "out_of_scope"`. Every result includes `contextTimestamp`, `inputHash`, `model`, `providerReportedModel`, `promptVersion`, and source references. A missing verified event is stated as insufficient event evidence, never as an invented catalyst.
+
 ## Trader decisions
 
 The workspace uses the existing execution position, intent, validation, confirmation-token, refresh, reconciliation, and order state system:

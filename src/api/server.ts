@@ -11,6 +11,7 @@ import {
   ExecutionIntentRequestSchema,
   ManualPositionRequestSchema,
   ExecutionSimulationRequestSchema,
+  AssistantQueryRequestSchema,
   ReplaySimulationRequestSchema,
   TraderDecisionRequestSchema,
   type ApiEnvelope,
@@ -36,6 +37,7 @@ import {
 } from '../domain/market-quality.js';
 import { InMemorySnapshotStore, type MarketSnapshotStore } from '../domain/snapshots.js';
 import type { SourceMetadata, SourceReference } from '../domain/types.js';
+import type { OrderBookSnapshot } from '../domain/types.js';
 import type {
   CaptureStore,
   EventReplayCase,
@@ -51,6 +53,10 @@ import {
   type DecisionStressTestClient,
 } from '../domain/decision-stress-test.js';
 import {
+  runWorkspaceQuestion,
+  type WorkspaceQuestionClient,
+} from '../domain/workspace-question.js';
+import {
   EXECUTION_CAPABILITIES,
   toProductContext,
   toProductEvent,
@@ -61,6 +67,7 @@ import {
   toProductReplaySummary,
   toProductSimulation,
   toProductSourceReference,
+  type ProductWorkspaceQuestion,
   type ProductInstrumentListItem,
   type ProductSourceReference,
 } from './product-contracts.js';
@@ -76,6 +83,7 @@ export type ApiServerOptions = {
   eventStore?: CaptureStore;
   demo?: BitgetDemoRealityAdapter;
   qwen?: DecisionStressTestClient;
+  assistant?: WorkspaceQuestionClient;
   executionStore?: ExecutionStore;
   executionService?: ExecutionService;
   now?: () => Date;
@@ -125,6 +133,8 @@ export function createApiServer(options: ApiServerOptions): Server {
   const executionStore = options.executionStore ?? new InMemoryExecutionStore();
   const demo = options.demo ?? new BitgetDemoClient();
   const qwen = options.qwen ?? new QwenClient();
+  const assistant =
+    options.assistant ?? (isWorkspaceQuestionClient(qwen) ? qwen : new QwenClient());
   const execution =
     options.executionService ??
     new ExecutionService({
@@ -149,7 +159,9 @@ export function createApiServer(options: ApiServerOptions): Server {
       replayEngine,
       eventReplayEngine,
       execution,
+      executionStore,
       qwen,
+      assistant,
       now,
       runtime,
     ).catch((error: unknown) => {
@@ -177,7 +189,9 @@ async function handleRequest(
   replayEngine: ReplayEngine | null,
   eventReplayEngine: EventReplayEngine | null,
   execution: ExecutionService,
+  executionStore: ExecutionStore,
   qwen: DecisionStressTestClient,
+  assistant: WorkspaceQuestionClient,
   now: () => Date,
   runtime: ApiRuntime,
 ): Promise<void> {
@@ -202,6 +216,11 @@ async function handleRequest(
 
   if (method === 'POST' && parsedUrl.pathname === '/api/execution/decisions') {
     await sendTraderDecision(response, request, execution, options, qwen, now);
+    return;
+  }
+
+  if (method === 'POST' && parsedUrl.pathname === '/api/assistant/query') {
+    await sendAssistantQuery(response, request, options, snapshots, executionStore, assistant, now);
     return;
   }
 
@@ -1344,6 +1363,149 @@ async function sendSimulation(
   });
 }
 
+async function sendAssistantQuery(
+  response: ServerResponse,
+  request: IncomingMessage,
+  options: ApiServerOptions,
+  snapshots: MarketSnapshotStore,
+  executionStore: ExecutionStore,
+  assistant: WorkspaceQuestionClient,
+  now: () => Date,
+): Promise<void> {
+  const payload = await parseRequestBody(response, request, now);
+  if (payload === null) return;
+  const parsed = AssistantQueryRequestSchema.safeParse(payload);
+  if (!parsed.success) {
+    sendError(response, now(), 'INVALID_REQUEST', formatZodError(parsed.error), 400);
+    return;
+  }
+  const input = parsed.data;
+  if (input.quantity !== undefined && !isPositiveDecimal(input.quantity)) {
+    sendError(
+      response,
+      now(),
+      'simulation_invalid_quantity',
+      'quantity must be a positive decimal string',
+      400,
+    );
+    return;
+  }
+
+  const decision =
+    input.decisionId === undefined ? null : await executionStore.getDecision(input.decisionId);
+  if (input.decisionId !== undefined && decision === null) {
+    sendError(response, now(), 'DECISION_NOT_FOUND', 'decision ID was not found', 404);
+    return;
+  }
+  if (decision !== null && decision.providerSymbol !== input.symbol) {
+    sendError(
+      response,
+      now(),
+      'INVALID_REQUEST',
+      'decision symbol does not match requested symbol',
+      400,
+    );
+    return;
+  }
+
+  let snapshot = input.snapshotId === undefined ? null : snapshots.getOrderBook(input.snapshotId);
+  if (input.snapshotId !== undefined && snapshot === null) {
+    sendError(response, now(), 'SNAPSHOT_NOT_FOUND', 'snapshot ID was not found', 404);
+    return;
+  }
+  if (decision?.bookSnapshotId !== null && decision?.bookSnapshotId !== undefined) {
+    const decisionSnapshot = snapshots.getOrderBook(decision.bookSnapshotId);
+    if (decisionSnapshot !== null) snapshot = decisionSnapshot;
+  }
+  if (snapshot !== null && snapshot.providerSymbol !== input.symbol) {
+    sendError(
+      response,
+      now(),
+      'INVALID_REQUEST',
+      'snapshot symbol does not match requested symbol',
+      400,
+    );
+    return;
+  }
+  if (snapshot === null) {
+    const fetched = await safeProviderCall(() => options.marketData.getOrderBook(input.symbol));
+    if (fetched !== null) snapshot = snapshots.saveOrderBook(fetched.data);
+  }
+
+  const processedAt = now().toISOString();
+  const context = await loadDecisionStressContext(
+    options,
+    input.symbol,
+    processedAt,
+    snapshot,
+    snapshot === null
+      ? []
+      : [toSourceReference(snapshot.source, input.symbol, snapshot.snapshotId)],
+  );
+  if (context === null) {
+    sendError(response, now(), 'INSTRUMENT_NOT_FOUND', 'instrument was not found', 404);
+    return;
+  }
+  const simulation =
+    decision?.simulation ??
+    (input.quantity === undefined || snapshot === null
+      ? null
+      : simulateExit({
+          providerSymbol: input.symbol,
+          requestedQuantity: input.quantity,
+          snapshot,
+          now: now(),
+          ...(options.qualityConfig === undefined ? {} : { config: options.qualityConfig }),
+        }));
+  const assistantResult = await runWorkspaceQuestion(assistant, {
+    providerSymbol: input.symbol,
+    question: input.question,
+    context,
+    simulation,
+    decision,
+    additionalSourceRefIds:
+      decision?.bookSource === null || decision?.bookSource === undefined
+        ? []
+        : [decision.bookSource.sourceId],
+    processedAt,
+  });
+  const sources = uniqueProductSources([
+    ...context.sourceRefs.map((source) => toProductSourceReference(source)),
+    ...context.eventContext.events.map((event) => ({
+      sourceId: event.eventId,
+      sourceType: 'event-evidence',
+      label: event.title,
+      url: event.sourceUrl,
+      observedAt: event.sourceAvailableAt,
+    })),
+    ...(snapshot === null ? [] : [toProductSourceReference(snapshot.source)]),
+    ...(decision?.bookSource === null || decision?.bookSource === undefined
+      ? []
+      : [toProductSourceReference(decision.bookSource)]),
+  ]);
+  const data: ProductWorkspaceQuestion = {
+    ...assistantResult.result,
+    supportingFacts: assistantResult.facts.filter((fact) =>
+      assistantResult.result.supportingFactIds.includes(fact.id),
+    ),
+    sources,
+  };
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: assistantResult.result.contextTimestamp,
+    freshness: contextFreshness(context),
+    data,
+    sourceRefs: sources,
+    warnings: [
+      ...context.warnings,
+      ...(assistantResult.result.status === 'unavailable' &&
+      assistantResult.result.reason !== undefined
+        ? [assistantResult.result.reason]
+        : []),
+    ],
+  });
+}
+
 async function generateDecisionStressTest(
   options: ApiServerOptions,
   qwen: DecisionStressTestClient,
@@ -1410,6 +1572,8 @@ async function loadDecisionStressContext(
   options: ApiServerOptions,
   providerSymbol: string,
   asOf: string,
+  orderBook: OrderBookSnapshot | null = null,
+  sourceRefs: SourceReference[] = [],
 ): Promise<AfterMrktContext | null> {
   const universe = await safeProviderCall(() => options.marketData.discoverRealityInstruments());
   const instrument = universe?.data.find((item) => item.providerSymbol === providerSymbol);
@@ -1444,7 +1608,7 @@ async function loadDecisionStressContext(
     providerSymbol,
     instrument,
     ticker: ticker?.data ?? null,
-    orderBook: null,
+    orderBook,
     markets: marketState?.data ?? null,
     calendar: marketCalendar?.data ?? null,
     suspension: null,
@@ -1460,7 +1624,7 @@ async function loadDecisionStressContext(
           },
     events,
     analyses,
-    sourceRefs: [],
+    sourceRefs,
     ...(store === undefined ? { eventSourceAvailable: false } : {}),
     ...(options.qualityConfig === undefined ? {} : { qualityConfig: options.qualityConfig }),
   });
@@ -1845,6 +2009,24 @@ function freshnessWarnings(freshness: ReturnType<typeof freshnessFromSource>): s
 
 function contextFreshness(context: AfterMrktContext) {
   return context.liquidityContext.metrics?.freshness ?? context.market.freshness;
+}
+
+function uniqueProductSources(sources: ProductSourceReference[]): ProductSourceReference[] {
+  const seen = new Set<string>();
+  return sources.filter((source) => {
+    if (seen.has(source.sourceId)) return false;
+    seen.add(source.sourceId);
+    return true;
+  });
+}
+
+function isWorkspaceQuestionClient(value: unknown): value is WorkspaceQuestionClient {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { model?: unknown }).model === 'string' &&
+    typeof (value as { askWorkspaceQuestion?: unknown }).askWorkspaceQuestion === 'function'
+  );
 }
 
 function localFreshness(receivedAt: string, reason: string) {

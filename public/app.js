@@ -14,6 +14,7 @@ const state = {
   pendingDecision: null,
   decisionEnvelope: null,
   decisionToken: null,
+  assistantAnswer: null,
   requestId: 0,
 };
 const MARKET_BELT_REFRESH_MS = 30_000;
@@ -106,6 +107,112 @@ function errorText(error) {
   return error instanceof AfterMrktApiError
     ? error.message
     : 'The AfterMrkt server could not provide this section.';
+}
+
+function formatAssistantFact(fact) {
+  if (fact.status === 'unavailable') return fact.reason ?? 'unavailable';
+  if (fact.value === null || fact.value === '') return '--';
+  if (fact.unit === 'price') return formatMoney(fact.value);
+  if (fact.unit === 'quote') return formatMoney(fact.value);
+  if (fact.unit === 'percent') return formatPercent(fact.value);
+  if (fact.unit === 'ratio') {
+    const ratio = Number(fact.value);
+    return Number.isFinite(ratio) ? `${(ratio * 100).toFixed(1)}%` : '--';
+  }
+  if (fact.unit === 'bps') return formatBps(fact.value);
+  if (fact.unit === 'units') return formatNumber(fact.value);
+  return fact.value;
+}
+
+function renderAssistantAnswer(answer) {
+  const result = $('#assistant-result');
+  if (!result) return;
+  state.assistantAnswer = answer;
+  if (!answer) {
+    result.hidden = true;
+    result.classList.remove('unavailable', 'out-of-scope');
+    return;
+  }
+  result.hidden = false;
+  result.classList.toggle('unavailable', answer.status === 'unavailable');
+  result.classList.toggle('out-of-scope', answer.status === 'out_of_scope');
+  setText('#assistant-status', `QWEN · ${answer.status.replaceAll('_', ' ')}`);
+  setText('#assistant-answer', answer.answer);
+  const facts = answer.supportingFacts ?? [];
+  const grounding = $('#assistant-grounding');
+  const list = $('#assistant-grounding-list');
+  if (grounding && list) {
+    grounding.hidden = facts.length === 0;
+    list.replaceChildren(
+      ...facts.map((fact) => {
+        const item = document.createElement('li');
+        item.textContent = `${fact.label} · ${formatAssistantFact(fact)}`;
+        return item;
+      }),
+    );
+  }
+  const uncertainties = $('#assistant-uncertainties');
+  if (uncertainties) {
+    uncertainties.replaceChildren(
+      ...(answer.uncertainties ?? []).map((uncertainty) => {
+        const item = document.createElement('li');
+        item.textContent = uncertainty;
+        return item;
+      }),
+    );
+    uncertainties.hidden = (answer.uncertainties ?? []).length === 0;
+  }
+  setText(
+    '#assistant-provenance',
+    `Qwen · ${answer.model} · context ${formatTime(answer.contextTimestamp)} · input ${answer.inputHash}`,
+  );
+}
+
+async function askWorkspaceQuestion(question) {
+  const trimmed = question.trim();
+  if (!trimmed || !state.symbol) return;
+  const requestId = state.requestId;
+  const symbol = state.symbol;
+  const button = $('#assistant-submit');
+  const input = $('#assistant-question');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Researching…';
+  }
+  setText('#assistant-status', 'QWEN · reading the current context…');
+  setText('#assistant-answer', '');
+  try {
+    const simulation = state.fullPositionSimulation;
+    const decision = state.decisionEnvelope?.data?.decision;
+    const response = await afterMrktApi.askWorkspace({
+      symbol,
+      question: trimmed,
+      ...(simulation?.bookSnapshotId ? { snapshotId: simulation.bookSnapshotId } : {}),
+      ...(simulation?.requestedQuantity ? { quantity: simulation.requestedQuantity } : {}),
+      ...(decision?.decisionId ? { decisionId: decision.decisionId } : {}),
+    });
+    if (requestId !== state.requestId || symbol !== state.symbol) return;
+    renderAssistantAnswer(response.data);
+  } catch (error) {
+    if (requestId !== state.requestId || symbol !== state.symbol) return;
+    renderAssistantAnswer({
+      status: 'unavailable',
+      answer: errorText(error),
+      supportingFacts: [],
+      uncertainties: ['The contextual Qwen explanation could not be loaded.'],
+      model: '--',
+      contextTimestamp: new Date().toISOString(),
+      inputHash: '--',
+    });
+  } finally {
+    if (requestId === state.requestId && symbol === state.symbol) {
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Ask AfterMrkt';
+      }
+      if (input) input.value = trimmed;
+    }
+  }
 }
 
 function createTickerItem(instrument, duplicate = false) {
@@ -450,6 +557,18 @@ function bindWorkspaceActions() {
       : 'View evidence spans and source URL';
   });
   $('#instrument-select')?.addEventListener('change', (event) => loadWorkspace(event.target.value));
+  $('#assistant-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void askWorkspaceQuestion($('#assistant-question')?.value ?? '');
+  });
+  $$('.assistant-example').forEach((button) => {
+    button.addEventListener('click', () => {
+      const input = $('#assistant-question');
+      const question = button.dataset.question ?? '';
+      if (input) input.value = question;
+      void askWorkspaceQuestion(question);
+    });
+  });
   $('#simulate-button')?.addEventListener('click', () =>
     runSimulationSuite($('#position-quantity')?.value ?? ''),
   );
@@ -958,6 +1077,7 @@ function resetWorkspaceView(symbol) {
   state.pendingDecision = null;
   state.decisionEnvelope = null;
   state.decisionToken = null;
+  state.assistantAnswer = null;
   setText('#context-status', `Loading ${symbol} live context…`);
   setText('#instrument-native', 'Loading…');
   setText('#instrument-company', 'Loading…');
@@ -1013,6 +1133,9 @@ function resetWorkspaceView(symbol) {
   setText('#exit-executable', '--');
   renderExitExplanation(null);
   renderDecisionStressTest(null);
+  renderAssistantAnswer(null);
+  const assistantQuestion = $('#assistant-question');
+  if (assistantQuestion) assistantQuestion.value = '';
   const decisionPanel = $('#trader-decision');
   if (decisionPanel) decisionPanel.hidden = true;
   const decisionReview = $('#decision-review');

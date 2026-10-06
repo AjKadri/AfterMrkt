@@ -214,6 +214,28 @@ describe('integrated AfterMrkt frontend', () => {
     expect(workspace).toContain("The trader's final call");
   });
 
+  it('keeps contextual research single-turn, read-only, and scoped to the current instrument', async () => {
+    const [workspace, client, app] = await Promise.all([
+      readPublicFile('workspace.html'),
+      readPublicFile('lib/aftermrkt-api.js'),
+      readPublicFile('app.js'),
+    ]);
+    const assistantSource = app.match(
+      /async function askWorkspaceQuestion\(question\) \{[\s\S]*?(?=\n\nfunction createTickerItem)/,
+    )?.[0];
+    expect(assistantSource).toBeDefined();
+    expect(workspace).toContain('id="ask-aftermrkt"');
+    expect(workspace).toContain('maxlength="600"');
+    expect(workspace).toContain('id="assistant-result"');
+    expect(client).toContain("'/api/assistant/query'");
+    expect(assistantSource).toContain('afterMrktApi.askWorkspace');
+    expect(assistantSource).toContain('snapshotId');
+    expect(assistantSource).toContain('decisionId');
+    expect(assistantSource).not.toContain('state.fullPositionSimulation =');
+    expect(app).toContain('renderAssistantAnswer(null)');
+    expect(app).toContain('state.requestId');
+  });
+
   it('scales preset quantities with exact decimal arithmetic', async () => {
     const app = await readPublicFile('app.js');
     const functionSource = app.match(
