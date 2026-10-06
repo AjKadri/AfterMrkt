@@ -7,7 +7,10 @@ export {
   QWEN_ANALYSIS_PROMPT_VERSION,
   QWEN_SCHEMA_VERSION,
   QWEN_EVENT_JSON_SCHEMA,
+  QWEN_DECISION_STRESS_JSON_SCHEMA,
+  QWEN_DECISION_STRESS_PROMPT_VERSION,
   QwenClient,
+  parseQwenDecisionStressTest,
   parseQwenEvent,
 } from './client.js';
 export type {
@@ -17,5 +20,6 @@ export type {
   QwenResponseFormat,
   QwenTokenAccounting,
   QwenEvidencePacket,
+  QwenDecisionStressTestPacket,
   QwenThinkingMode,
 } from './client.js';

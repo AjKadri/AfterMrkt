@@ -12,6 +12,7 @@ import {
   ManualPositionRequestSchema,
   ExecutionSimulationRequestSchema,
   ReplaySimulationRequestSchema,
+  TraderDecisionRequestSchema,
   type ApiEnvelope,
   type ApiErrorCode,
   type ApiErrorEnvelope,
@@ -44,6 +45,11 @@ import type {
 import { ExecutionError, ExecutionService } from '../domain/execution.js';
 import type { ExecutionStore } from '../domain/execution-store.js';
 import { InMemoryExecutionStore } from '../persistence/execution-store.js';
+import { QwenClient } from '../adapters/qwen/index.js';
+import {
+  runDecisionStressTest,
+  type DecisionStressTestClient,
+} from '../domain/decision-stress-test.js';
 import {
   EXECUTION_CAPABILITIES,
   toProductContext,
@@ -69,6 +75,7 @@ export type ApiServerOptions = {
   eventReplayEngine?: EventReplayEngine;
   eventStore?: CaptureStore;
   demo?: BitgetDemoRealityAdapter;
+  qwen?: DecisionStressTestClient;
   executionStore?: ExecutionStore;
   executionService?: ExecutionService;
   now?: () => Date;
@@ -117,6 +124,7 @@ export function createApiServer(options: ApiServerOptions): Server {
   const now = options.now ?? (() => new Date());
   const executionStore = options.executionStore ?? new InMemoryExecutionStore();
   const demo = options.demo ?? new BitgetDemoClient();
+  const qwen = options.qwen ?? new QwenClient();
   const execution =
     options.executionService ??
     new ExecutionService({
@@ -141,6 +149,7 @@ export function createApiServer(options: ApiServerOptions): Server {
       replayEngine,
       eventReplayEngine,
       execution,
+      qwen,
       now,
       runtime,
     ).catch((error: unknown) => {
@@ -168,6 +177,7 @@ async function handleRequest(
   replayEngine: ReplayEngine | null,
   eventReplayEngine: EventReplayEngine | null,
   execution: ExecutionService,
+  qwen: DecisionStressTestClient,
   now: () => Date,
   runtime: ApiRuntime,
 ): Promise<void> {
@@ -187,6 +197,11 @@ async function handleRequest(
 
   if (method === 'POST' && parsedUrl.pathname === '/api/execution/intents') {
     await sendExecutionIntent(response, request, execution, now);
+    return;
+  }
+
+  if (method === 'POST' && parsedUrl.pathname === '/api/execution/decisions') {
+    await sendTraderDecision(response, request, execution, options, qwen, now);
     return;
   }
 
@@ -210,6 +225,29 @@ async function handleRequest(
     parts[4] === 'confirm'
   ) {
     await sendExecutionConfirmation(response, request, execution, now, parts[3] ?? '');
+    return;
+  }
+
+  if (
+    method === 'GET' &&
+    parts.length === 4 &&
+    parts[0] === 'api' &&
+    parts[1] === 'execution' &&
+    parts[2] === 'decisions'
+  ) {
+    await sendTraderDecisionView(response, execution, now, parts[3] ?? '');
+    return;
+  }
+
+  if (
+    method === 'POST' &&
+    parts.length === 5 &&
+    parts[0] === 'api' &&
+    parts[1] === 'execution' &&
+    parts[2] === 'decisions' &&
+    parts[4] === 'confirm'
+  ) {
+    await sendTraderDecisionConfirmation(response, request, execution, now, parts[3] ?? '');
     return;
   }
 
@@ -323,7 +361,7 @@ async function handleRequest(
   }
 
   if (method === 'POST' && parsedUrl.pathname === '/api/execution/simulations') {
-    await sendSimulation(response, request, options, snapshots, now);
+    await sendSimulation(response, request, options, snapshots, qwen, now);
     return;
   }
 
@@ -775,6 +813,134 @@ async function sendExecutionIntent(
   });
 }
 
+async function sendTraderDecision(
+  response: ServerResponse,
+  request: IncomingMessage,
+  execution: ExecutionService,
+  options: ApiServerOptions,
+  qwen: DecisionStressTestClient,
+  now: () => Date,
+): Promise<void> {
+  const payload = await parseRequestBody(response, request, now);
+  if (payload === null) return;
+  const parsed = TraderDecisionRequestSchema.safeParse(payload);
+  if (!parsed.success) {
+    sendError(response, now(), 'INVALID_REQUEST', formatZodError(parsed.error), 400);
+    return;
+  }
+  const prepared = await execution.prepareTraderDecision({
+    positionId: parsed.data.positionId,
+    providerSymbol: parsed.data.symbol,
+    decision: parsed.data.decision,
+    requestedQuantity: parsed.data.requestedQuantity,
+    ...(parsed.data.simulationSnapshotId === undefined
+      ? {}
+      : { simulationSnapshotId: parsed.data.simulationSnapshotId }),
+    ...(parsed.data.orderType === undefined ? {} : { orderType: parsed.data.orderType }),
+    ...(parsed.data.limitPrice === undefined ? {} : { limitPrice: parsed.data.limitPrice }),
+    ...(parsed.data.maximumAcceptableSlippageBps === undefined
+      ? {}
+      : { maximumAcceptableSlippageBps: parsed.data.maximumAcceptableSlippageBps }),
+  });
+  const decisionStressTest =
+    prepared.simulation === null
+      ? null
+      : await generateDecisionStressTest(options, qwen, prepared.simulation, now().toISOString());
+  const ticker = await safeProviderCall(() => options.marketData.getTicker(parsed.data.symbol));
+  const created = await execution.saveTraderDecision({
+    prepared,
+    decisionStressTest,
+    currentPrice: ticker?.data.lastPrice ?? null,
+  });
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: created.decision.createdAt,
+    freshness:
+      created.decision.simulation?.freshness ??
+      localFreshness(created.decision.createdAt, 'decision recorded locally'),
+    data: created,
+    sourceRefs:
+      created.decision.bookSource === null
+        ? []
+        : [
+            toSourceReference(
+              created.decision.bookSource,
+              created.decision.providerSymbol,
+              created.decision.bookSnapshotId,
+            ),
+          ],
+    warnings: decisionWarnings(created.decision),
+  });
+}
+
+async function sendTraderDecisionView(
+  response: ServerResponse,
+  execution: ExecutionService,
+  now: () => Date,
+  decisionId: string,
+): Promise<void> {
+  const decision = await execution.getDecision(decisionId);
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: decision.createdAt,
+    freshness:
+      decision.simulation?.freshness ??
+      localFreshness(decision.createdAt, 'decision record is local'),
+    data: { decision },
+    sourceRefs:
+      decision.bookSource === null
+        ? []
+        : [
+            toSourceReference(
+              decision.bookSource,
+              decision.providerSymbol,
+              decision.bookSnapshotId,
+            ),
+          ],
+    warnings: decisionWarnings(decision),
+  });
+}
+
+async function sendTraderDecisionConfirmation(
+  response: ServerResponse,
+  request: IncomingMessage,
+  execution: ExecutionService,
+  now: () => Date,
+  decisionId: string,
+): Promise<void> {
+  const payload = await parseRequestBody(response, request, now);
+  if (payload === null) return;
+  const parsed = ExecutionConfirmationRequestSchema.safeParse(payload);
+  if (!parsed.success) {
+    sendError(response, now(), 'INVALID_REQUEST', formatZodError(parsed.error), 400);
+    return;
+  }
+  const result = await execution.confirmTraderDecision(decisionId, parsed.data.confirmationToken);
+  const decision = result.decision;
+  sendEnvelope(response, {
+    mode: 'LIVE',
+    asOf: decision.confirmedAt ?? decision.createdAt,
+    freshness:
+      decision.simulation?.freshness ??
+      localFreshness(decision.createdAt, 'decision record is local'),
+    data: { result },
+    sourceRefs:
+      decision.bookSource === null
+        ? []
+        : [
+            toSourceReference(
+              decision.bookSource,
+              decision.providerSymbol,
+              decision.bookSnapshotId,
+            ),
+          ],
+    warnings:
+      result.status === 'refresh_required'
+        ? ['The observed book changed. Review the refreshed simulation before confirming again.']
+        : decisionWarnings(decision),
+  });
+}
+
 async function sendExecutionIntentView(
   response: ServerResponse,
   execution: ExecutionService,
@@ -1072,6 +1238,7 @@ async function sendSimulation(
   request: IncomingMessage,
   options: ApiServerOptions,
   snapshots: MarketSnapshotStore,
+  qwen: DecisionStressTestClient,
   now: () => Date,
 ): Promise<void> {
   let payload: unknown;
@@ -1154,7 +1321,10 @@ async function sendSimulation(
     toProductSourceReference(snapshot.source),
     ...(tickerSource === null ? [] : [toProductSourceReference(tickerSource)]),
   ];
-  const data = toProductSimulation({ simulation, currentPrice, sources });
+  const decisionStressTest = input.includeDecisionStressTest
+    ? await generateDecisionStressTest(options, qwen, simulation, now().toISOString())
+    : null;
+  const data = toProductSimulation({ simulation, currentPrice, sources, decisionStressTest });
   sendEnvelope(response, {
     mode: 'LIVE',
     asOf: data.bookAsOf ?? data.receivedAt,
@@ -1169,8 +1339,93 @@ async function sendSimulation(
       ...(currentPrice === null
         ? ['Current ticker price was unavailable for this simulation.']
         : []),
+      ...(decisionStressTest?.status === 'unavailable' ? [decisionStressTest.reason] : []),
     ],
   });
+}
+
+async function generateDecisionStressTest(
+  options: ApiServerOptions,
+  qwen: DecisionStressTestClient,
+  simulation: ReturnType<typeof simulateExit>,
+  processedAt: string,
+) {
+  const store = options.eventStore ?? options.replayStore;
+  const events =
+    store === undefined
+      ? []
+      : await safeStoreCall(() => store.listSourceEvents(simulation.providerSymbol));
+  const analyses = store === undefined ? [] : await safeStoreCall(() => store.listEventAnalyses());
+  const eventContext = deriveUnifiedEventContext({
+    providerSymbol: simulation.providerSymbol,
+    events,
+    analyses,
+    contextAsOf: processedAt,
+    markets: null,
+    calendar: null,
+    ...(store === undefined ? { eventSourceAvailable: false } : {}),
+  });
+  const qualifyingIds = new Set(eventContext.events.map((event) => event.eventId));
+  const sourceEventFacts = analyses
+    .filter(
+      (analysis) =>
+        qualifyingIds.has(analysis.eventId) &&
+        analysis.status === 'validated' &&
+        analysis.sourceBound,
+    )
+    .flatMap((analysis) => analysis.facts.map((fact) => fact.statement));
+  const sourceEventStatus = events.length === 0 ? 'not_applicable' : eventContext.status;
+  const nativeTicker = events.find((event) => event.nativeTicker.length > 0)?.nativeTicker ?? null;
+  return runDecisionStressTest(qwen, {
+    providerSymbol: simulation.providerSymbol,
+    nativeTicker,
+    moveSinceNativeClosePercent: null,
+    sessionState: 'unavailable',
+    sourceEventStatus,
+    sourceEventFacts,
+    spreadBps: simulation.spreadBps,
+    freshnessState: simulation.freshness.state,
+    liquidityCondition: simulation.condition.label,
+    requestedQuantity: simulation.requestedQuantity,
+    filledQuantity: simulation.filledQuantity,
+    unfilledQuantity: simulation.unfilledQuantity,
+    fillRatioWithin50Bps: simulation.positionPercentageWithin50Bps,
+    estimatedVwap: simulation.estimatedVWAP,
+    slippageBps: simulation.slippageVersusMidpointBps,
+    nativePriceConfirmation: 'unavailable',
+    limitations: [
+      simulation.estimateDisclaimer,
+      'Native-price confirmation is unavailable in the current product phase.',
+      ...(simulation.freshness.state === 'fresh'
+        ? []
+        : ['The observed book is not fresh enough to treat as current execution context.']),
+    ],
+    processedAt,
+  });
+}
+
+function decisionWarnings(decision: {
+  decision: string;
+  environment: string;
+  executionStatus: string;
+  decisionStressTest: { status: string; reason?: string } | null;
+}): string[] {
+  return [
+    ...(decision.environment === 'SIMULATED'
+      ? [
+          'This is a SIMULATED manual position. Confirmation records the trader decision; it does not submit an order.',
+        ]
+      : []),
+    ...(decision.decision === 'hold' ? ['Hold decisions never submit an order.'] : []),
+    ...(decision.executionStatus === 'execution_unavailable'
+      ? [
+          'BITGET_DEMO execution is unavailable for this position and no provider order was created.',
+        ]
+      : []),
+    ...(decision.decisionStressTest?.status === 'unavailable' && decision.decisionStressTest.reason
+      ? [decision.decisionStressTest.reason]
+      : []),
+  ];
 }
 
 async function sendReplayList(
@@ -1762,6 +2017,7 @@ function executionErrorStatus(code: ExecutionError['code']): number {
     code === 'POSITION_NOT_FOUND' ||
     code === 'INSTRUMENT_NOT_FOUND' ||
     code === 'INTENT_NOT_FOUND' ||
+    code === 'DECISION_NOT_FOUND' ||
     code === 'ORDER_NOT_FOUND'
   ) {
     return 404;

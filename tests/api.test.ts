@@ -9,6 +9,8 @@ import { InMemoryCaptureStore } from '../src/persistence/store.js';
 import { canonicalJson } from '../src/lib/canonical.js';
 import { sha256 } from '../src/lib/hash.js';
 import type { EventAnalysis, SourceEvent } from '../src/contracts/events.js';
+import type { QwenCall } from '../src/adapters/qwen/index.js';
+import type { DecisionStressTestClient } from '../src/domain/decision-stress-test.js';
 import { TEST_FIXTURE_SOURCE, testMarketSnapshotInput, testSnapshot } from './fixtures/market.js';
 
 const NOW = new Date('2026-09-29T22:00:00.000Z');
@@ -105,6 +107,66 @@ describe('AfterMrkt API contracts', () => {
         executionCapabilities: { simulation: 'available' },
       });
       expect(body.data.reasons.length).toBeGreaterThan(0);
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
+
+  it('runs the decision stress test without a qualifying event and keeps it prose-only', async () => {
+    const qwen: DecisionStressTestClient = {
+      model: 'qwen3.8-max',
+      stressTestDecision: async (input) => {
+        expect(input.sourceEventStatus).toBe('not_applicable');
+        expect(input.requestedQuantity).toBe('5');
+        return {
+          content: JSON.stringify({
+            immediateExit: 'The captured depth suggests a partial absorbable amount.',
+            evidence: 'The deterministic simulation contains the current fill and slippage facts.',
+            mainUncertainty: 'The book can change before a later review.',
+            considerations: [
+              'A smaller decision leaves more exposure.',
+              'Immediacy accepts more book impact.',
+            ],
+            model: 'qwen3.8-max',
+            promptVersion: 'decision-stress-test-v1',
+          }),
+          providerReportedModel: 'qwen3.8-max',
+        } as QwenCall;
+      },
+    };
+    const server = createApiServer({ marketData: testProvider(), qwen, now: () => NOW });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('test server did not expose a port');
+    }
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/execution/simulations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ symbol: 'RMUUSDT', quantity: '5', includeDecisionStressTest: true }),
+      });
+      const body = (await response.json()) as {
+        data: {
+          estimatedVwap: string;
+          decisionStressTest: {
+            status: string;
+            immediateExit: string;
+            inputHash: string;
+          };
+        };
+      };
+      expect(response.status).toBe(200);
+      expect(body.data).toMatchObject({
+        estimatedVwap: '100',
+        decisionStressTest: {
+          status: 'available',
+          immediateExit: 'The captured depth suggests a partial absorbable amount.',
+          inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      });
+      expect(JSON.stringify(body.data.decisionStressTest)).not.toContain('estimatedVwap');
     } finally {
       server.close();
       await once(server, 'close');
@@ -311,6 +373,150 @@ describe('AfterMrkt API contracts', () => {
       expect(blockedResponse.status).toBe(400);
       expect((await blockedResponse.json()) as { error: { code: string } }).toMatchObject({
         error: { code: 'MANUAL_POSITION_NOT_EXECUTABLE' },
+      });
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
+
+  it('records hold and exit decisions without turning manual simulation into a provider order', async () => {
+    const snapshots = new InMemorySnapshotStore();
+    const server = createApiServer({ marketData: testProvider(), snapshots, now: () => NOW });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('test server did not expose a port');
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    try {
+      const simulationResponse = await fetch(`${baseUrl}/api/execution/simulations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          symbol: 'RMUUSDT',
+          quantity: '5',
+          includeDecisionStressTest: true,
+        }),
+      });
+      const simulationBody = (await simulationResponse.json()) as {
+        data: { bookSnapshotId: string; decisionStressTest: { status: string } };
+      };
+      expect(simulationResponse.status).toBe(200);
+      expect(simulationBody.data.bookSnapshotId).toMatch(/^[a-f0-9]{64}$/);
+      expect(simulationBody.data.decisionStressTest.status).toBe('unavailable');
+
+      const positionResponse = await fetch(`${baseUrl}/api/execution/positions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ symbol: 'RMUUSDT', quantity: '5' }),
+      });
+      const positionBody = (await positionResponse.json()) as {
+        data: { position: { positionId: string } };
+      };
+
+      const holdResponse = await fetch(`${baseUrl}/api/execution/decisions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          positionId: positionBody.data.position.positionId,
+          symbol: 'RMUUSDT',
+          decision: 'hold',
+          requestedQuantity: '5',
+          simulationSnapshotId: simulationBody.data.bookSnapshotId,
+        }),
+      });
+      const holdBody = (await holdResponse.json()) as {
+        data: {
+          decision: {
+            decisionId: string;
+            decision: string;
+            simulation: { estimatedVWAP: string };
+            executionStatus: string;
+          };
+          confirmationToken: string;
+        };
+      };
+      expect(holdResponse.status).toBe(200);
+      expect(holdBody.data.decision).toMatchObject({
+        decision: 'hold',
+        simulation: { estimatedVWAP: '100' },
+        executionStatus: 'awaiting_confirmation',
+      });
+      const confirmedHold = await fetch(
+        `${baseUrl}/api/execution/decisions/${holdBody.data.decision.decisionId}/confirm`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ confirmationToken: holdBody.data.confirmationToken }),
+        },
+      );
+      const confirmedHoldBody = (await confirmedHold.json()) as {
+        data: { result: { decision: { executionStatus: string }; order: unknown } };
+      };
+      expect(confirmedHold.status).toBe(200);
+      expect(confirmedHoldBody.data.result).toMatchObject({
+        decision: { executionStatus: 'not_applicable' },
+        order: null,
+      });
+      const replayedHold = await fetch(
+        `${baseUrl}/api/execution/decisions/${holdBody.data.decision.decisionId}/confirm`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ confirmationToken: holdBody.data.confirmationToken }),
+        },
+      );
+      expect(replayedHold.status).toBe(409);
+      expect((await replayedHold.json()) as { error: { code: string } }).toMatchObject({
+        error: { code: 'CONFIRMATION_REUSED' },
+      });
+
+      const exitResponse = await fetch(`${baseUrl}/api/execution/decisions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          positionId: positionBody.data.position.positionId,
+          symbol: 'RMUUSDT',
+          decision: 'partial_exit',
+          requestedQuantity: '2.5',
+          orderType: 'market',
+        }),
+      });
+      const exitBody = (await exitResponse.json()) as {
+        data: {
+          decision: {
+            decisionId: string;
+            decision: string;
+            requestedQuantity: string;
+            simulation: { estimatedVWAP: string };
+            executionStatus: string;
+          };
+          confirmationToken: string;
+        };
+      };
+      expect(exitResponse.status).toBe(200);
+      expect(exitBody.data.decision).toMatchObject({
+        decision: 'partial_exit',
+        requestedQuantity: '2.5',
+        simulation: { estimatedVWAP: '100' },
+        executionStatus: 'awaiting_confirmation',
+      });
+      const confirmedExit = await fetch(
+        `${baseUrl}/api/execution/decisions/${exitBody.data.decision.decisionId}/confirm`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ confirmationToken: exitBody.data.confirmationToken }),
+        },
+      );
+      const confirmedExitBody = (await confirmedExit.json()) as {
+        data: { result: { decision: { executionStatus: string }; order: unknown } };
+      };
+      expect(confirmedExit.status).toBe(200);
+      expect(confirmedExitBody.data.result).toMatchObject({
+        decision: { executionStatus: 'execution_unavailable' },
+        order: null,
       });
     } finally {
       server.close();

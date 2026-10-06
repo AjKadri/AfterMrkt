@@ -191,4 +191,25 @@ describe('integrated AfterMrkt frontend', () => {
     expect(app).not.toContain("lead.textContent = 'In plain English: '");
     expect(app).toContain('Only ${within50Text} of the requested amount');
   });
+
+  it('exposes the trader decision layer after simulation with explicit paper and confirmation states', async () => {
+    const [workspace, client, app] = await Promise.all([
+      readPublicFile('workspace.html'),
+      readPublicFile('lib/aftermrkt-api.js'),
+      readPublicFile('app.js'),
+    ]);
+    expect(workspace).toContain('id="trader-decision"');
+    expect(workspace).toContain('Prepare partial exit');
+    expect(workspace).toContain('Prepare full exit');
+    expect(workspace).toContain('Confirm exit');
+    expect(workspace).toContain('EXECUTION UNAVAILABLE');
+    expect(workspace).toContain('Max slippage (bps)');
+    expect(client).toContain('/api/execution/decisions');
+    expect(client).toContain('/confirm');
+    expect(client).toContain('includeDecisionStressTest');
+    expect(app).toContain('index === 2');
+    expect(app).toContain('PAPER DECISION RECORDED · EXECUTION UNAVAILABLE · NO ORDER CREATED');
+    expect(app).toContain('HOLD DECISION RECORDED · NO ORDER CREATED');
+    expect(workspace).toContain("The trader's final call");
+  });
 });

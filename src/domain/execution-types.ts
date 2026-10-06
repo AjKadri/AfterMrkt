@@ -1,6 +1,7 @@
 import type { DemoAccountCheck, DemoOrderState } from '../adapters/bitget/demo.js';
 import type { ExitSimulation, ExecutionCondition, ExecutionReason } from './market-quality.js';
 import type { SourceMetadata } from './types.js';
+import type { DecisionStressTestResult } from './decision-stress-test.js';
 
 export type PositionSource = 'manual' | 'demo' | 'connected_bitget';
 export type ExecutionEnvironment = 'SIMULATED' | 'BITGET_DEMO';
@@ -153,3 +154,72 @@ export type ExecutionOrderView = {
 };
 
 export type ExecutionConditionSummary = Pick<ExecutionCondition, 'label' | 'reasons'>;
+
+export type TraderDecisionKind = 'hold' | 'partial_exit' | 'full_exit';
+export type TraderDecisionStatus =
+  | 'awaiting_confirmation'
+  | 'confirmed'
+  | 'refresh_required'
+  | 'submitted'
+  | 'pending_verification'
+  | 'live'
+  | 'partially_filled'
+  | 'filled'
+  | 'ambiguous';
+export type TraderDecisionExecutionStatus =
+  'awaiting_confirmation' | 'not_applicable' | 'execution_unavailable' | ExecutionOrderStatus;
+
+export type TraderDecision = {
+  decisionId: string;
+  decision: TraderDecisionKind;
+  positionId: string;
+  environment: ExecutionEnvironment;
+  providerSymbol: string;
+  positionQuantity: string;
+  requestedQuantity: string;
+  exitPercentage: string;
+  currentPrice: string | null;
+  orderType: 'market' | 'limit' | null;
+  limitPrice: string | null;
+  maximumAcceptableSlippageBps: string | null;
+  intentId: string | null;
+  simulation: ExitSimulation | null;
+  bookSnapshotId: string | null;
+  bookSource: SourceMetadata | null;
+  decisionStressTest: DecisionStressTestResult | null;
+  createdAt: string;
+  confirmedAt: string | null;
+  status: TraderDecisionStatus;
+  executionStatus: TraderDecisionExecutionStatus;
+};
+
+export type PreparedTraderDecision = {
+  decision: TraderDecisionKind;
+  position: Position;
+  intent: ExecutionIntent | null;
+  simulation: ExitSimulation | null;
+  bookSource: SourceMetadata | null;
+  orderType: 'market' | 'limit' | null;
+  limitPrice: string | null;
+  maximumAcceptableSlippageBps: string | null;
+  confirmationToken: string | null;
+};
+
+export type CreatedTraderDecision = {
+  decision: TraderDecision;
+  confirmationToken: string;
+};
+
+export type TraderDecisionConfirmationResult =
+  | {
+      status: 'refresh_required';
+      decision: TraderDecision;
+      confirmationToken: string;
+      simulation: ExitSimulation;
+    }
+  | {
+      status: Exclude<TraderDecisionStatus, 'refresh_required'>;
+      decision: TraderDecision;
+      intent: ExecutionIntent | null;
+      order: ExecutionOrder | null;
+    };

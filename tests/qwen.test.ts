@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { QWEN_EVENT_JSON_SCHEMA, QwenClient, parseQwenEvent } from '../src/adapters/qwen/index.js';
+import {
+  QWEN_DECISION_STRESS_JSON_SCHEMA,
+  QWEN_DECISION_STRESS_PROMPT_VERSION,
+  QWEN_EVENT_JSON_SCHEMA,
+  QwenClient,
+  parseQwenDecisionStressTest,
+  parseQwenEvent,
+} from '../src/adapters/qwen/index.js';
 import providerContract from './fixtures/qwen/provider-contract.json';
 import thinkingComparison from './fixtures/qwen/thinking-comparison.json';
 
@@ -184,5 +191,42 @@ describe('Qwen event contract', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe('Qwen decision stress contract', () => {
+  it('accepts trade-off language without giving the trader a direction', () => {
+    const result = parseQwenDecisionStressTest(
+      JSON.stringify({
+        immediateExit: 'The observed depth may absorb only part of the requested amount.',
+        evidence: 'The deterministic simulation shows a partial fill against the captured book.',
+        mainUncertainty: 'The captured book may change before any later review.',
+        considerations: [
+          'A smaller decision reduces current book impact but leaves more exposure.',
+          'Immediacy accepts the observed execution-quality trade-off.',
+        ],
+        model: 'qwen3.8-max',
+        promptVersion: QWEN_DECISION_STRESS_PROMPT_VERSION,
+      }),
+    );
+
+    expect(result.considerations).toHaveLength(2);
+    expect(QWEN_DECISION_STRESS_JSON_SCHEMA.schema).not.toHaveProperty('properties.vwap');
+    expect(QWEN_DECISION_STRESS_JSON_SCHEMA.schema).not.toHaveProperty('properties.orderPrice');
+  });
+
+  it('rejects a recommendation instead of allowing Qwen to make the final call', () => {
+    expect(() =>
+      parseQwenDecisionStressTest(
+        JSON.stringify({
+          immediateExit: 'You should sell now.',
+          evidence: 'The book is thin.',
+          mainUncertainty: 'The next book is unknown.',
+          considerations: ['Use care.'],
+          model: 'qwen3.8-max',
+          promptVersion: QWEN_DECISION_STRESS_PROMPT_VERSION,
+        }),
+      ),
+    ).toThrow(/recommendation/);
   });
 });

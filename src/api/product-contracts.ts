@@ -16,6 +16,8 @@ import type {
   SourceReference,
 } from '../domain/types.js';
 import type { EventReplayCase, ReplayCase, ReplaySourceReference } from '../persistence/types.js';
+import type { DecisionStressTestResult } from '../domain/decision-stress-test.js';
+import type { TraderDecision } from '../domain/execution-types.js';
 
 export const EXECUTION_CAPABILITIES = Object.freeze({
   simulation: 'available',
@@ -169,6 +171,7 @@ export type ProductContext = {
 
 export type ProductSimulation = {
   symbol: string;
+  bookSnapshotId: string;
   currentPrice: string | null;
   requestedQuantity: string;
   filledQuantity: string;
@@ -198,7 +201,10 @@ export type ProductSimulation = {
   estimateDisclaimer: ExitSimulation['estimateDisclaimer'];
   sources: ProductSourceReference[];
   executionCapabilities: ExecutionCapabilities;
+  decisionStressTest: DecisionStressTestResult | null;
 };
+
+export type ProductTraderDecision = TraderDecision;
 
 export type ProductReplaySummary = {
   caseId: string;
@@ -338,10 +344,12 @@ export function toProductSimulation(input: {
   simulation: ExitSimulation;
   currentPrice: string | null;
   sources: ProductSourceReference[];
+  decisionStressTest?: DecisionStressTestResult | null;
 }): ProductSimulation {
   const simulation = input.simulation;
   return {
     symbol: simulation.providerSymbol,
+    bookSnapshotId: simulation.snapshotId,
     currentPrice: input.currentPrice,
     requestedQuantity: simulation.requestedQuantity,
     filledQuantity: simulation.filledQuantity,
@@ -374,6 +382,7 @@ export function toProductSimulation(input: {
     estimateDisclaimer: simulation.estimateDisclaimer,
     sources: uniqueSources(input.sources),
     executionCapabilities: EXECUTION_CAPABILITIES,
+    decisionStressTest: input.decisionStressTest ?? null,
   };
 }
 

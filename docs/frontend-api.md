@@ -171,6 +171,43 @@ This is an estimate based on the observed book. It is not a guaranteed fill, doe
 
 The execution condition labels are deterministic and include machine-readable reasons: `execution-normal`, `wide-spread`, `thin-book`, `execution-impaired`, `stale-book`, `execution-unavailable`, and `invalid-book`. Thresholds are provisional demo constants and are not statistically validated.
 
+## Decision stress test
+
+Add `"includeDecisionStressTest": true` to one successful live simulation request when the workspace needs the Qwen decision layer. The server sends Qwen only validated structured facts from the simulation and persisted event context. It never sends credentials or prompts to the browser.
+
+```json
+{
+  "decisionStressTest": {
+    "status": "available",
+    "stressTestId": "...",
+    "immediateExit": "The observed depth may absorb only part of the requested amount.",
+    "evidence": "The deterministic simulation shows the captured fill and slippage facts.",
+    "mainUncertainty": "The book may change before a later review.",
+    "considerations": ["A smaller exit reduces current book impact but leaves more exposure."],
+    "model": "qwen3.8-max",
+    "providerReportedModel": "qwen3.8-max",
+    "promptVersion": "decision-stress-test-v1",
+    "processedAt": "2026-09-30T21:11:29.078Z",
+    "inputHash": "..."
+  }
+}
+```
+
+`status: "unavailable"` is an honest degraded state when Qwen is not configured, unreachable, or returns invalid/recommendation language. A missing qualifying SEC event does not disable the stress test. The event status is passed as `not_applicable`, while the market and simulation facts remain available. Qwen produces trade-off prose only. Deterministic AfterMrkt logic owns every financial value and the trader owns the decision.
+
+## Trader decisions
+
+The workspace uses the existing execution position, intent, validation, confirmation-token, refresh, reconciliation, and order state system:
+
+- `POST /api/execution/positions` creates a local manual position. It is `SIMULATED` and cannot submit a provider order.
+- `POST /api/execution/decisions` prepares `hold`, `partial_exit`, or `full_exit`. Exit decisions create the existing execution intent and preserve its deterministic simulation, provider symbol, book snapshot, validation, order choice, limit price, and slippage guard. The response includes a one-time `confirmationToken` for the current browser flow.
+- `GET /api/execution/decisions/:decisionId` returns the persisted decision record.
+- `POST /api/execution/decisions/:decisionId/confirm` records the explicit trader confirmation. Hold ends in `not_applicable`. A manual exit ends in `execution_unavailable` with no provider order. If the observed book changes, the response is `refresh_required` with a new simulation and confirmation token.
+
+The decision record preserves the provider symbol, requested quantity, exit percentage, observed price, estimated VWAP, proceeds, slippage, fill ratio, liquidity condition, book timestamp, Qwen stress-test provenance, decision timestamp, simulation snapshot, execution environment, and actual execution status. Confirmation tokens are short-lived, single-use, and are not persisted by the browser.
+
+The current capability object remains `simulation: "available"`, `bitgetDemoReality: "unsupported_or_inaccessible"`, and `liveExecution: "disabled"`. The direct intent confirmation route remains the only path that could submit a supported Demo order in a future capability-gated environment. The current workspace does not present a successful Demo execution.
+
 ## Events and analysis
 
 `GET /api/instruments/:symbol/events`
@@ -232,5 +269,5 @@ Provider error codes and raw provider messages remain server-side diagnostics. A
 - Reality-specific raw order-book and fill routes remain inaccessible without the required provider access state. The UI should not imply that generic public depth is a proprietary Reality feed.
 - The official Bitget equities MCP is unreachable from the current Codex environment, so native price confirmation is unavailable.
 - Demo Reality acquisition and order-query probes were bounded and ended in an unsupported or inaccessible state. No order was submitted and the public contract does not advertise Demo execution.
-- Qwen analysis is persisted only when it has passed local validation. Normal market context does not call Qwen.
+- Qwen event interpretation is persisted only when it has passed local validation. Normal market context does not call Qwen. The simulation decision stress test is a separate, server-side Qwen call that remains useful when event analysis is `not_applicable` and never owns financial calculations or the final decision.
 - Freshness windows and execution thresholds are provisional operational constants, not statistical claims.

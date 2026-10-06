@@ -162,6 +162,47 @@ describe('deterministic position and confirmation workflow', () => {
     });
   });
 
+  it('revalidates a manual exit decision before recording confirmation', async () => {
+    const demo = new FakeDemo([]);
+    const provider = marketProvider([
+      testSnapshot(),
+      testSnapshot({ bids: [{ price: '99.99', quantity: '10' }] }),
+      testSnapshot({ bids: [{ price: '99.99', quantity: '10' }] }),
+    ]);
+    const service = createService(provider, demo);
+    const position = await service.createManualPosition({
+      providerSymbol: 'RMUUSDT',
+      quantity: '5',
+    });
+    const prepared = await service.prepareTraderDecision({
+      positionId: position.positionId,
+      providerSymbol: 'RMUUSDT',
+      decision: 'partial_exit',
+      requestedQuantity: '2.5',
+      orderType: 'market',
+    });
+    const created = await service.saveTraderDecision({
+      prepared,
+      decisionStressTest: null,
+      currentPrice: '100.5',
+    });
+    const refreshed = await service.confirmTraderDecision(
+      created.decision.decisionId,
+      created.confirmationToken,
+    );
+    expect(refreshed.status).toBe('refresh_required');
+    if (refreshed.status !== 'refresh_required') throw new Error('expected refresh');
+    expect(refreshed.decision.decisionStressTest).toBeNull();
+    const confirmed = await service.confirmTraderDecision(
+      refreshed.decision.decisionId,
+      refreshed.confirmationToken,
+    );
+    expect(confirmed.status).toBe('confirmed');
+    if (confirmed.status === 'refresh_required') throw new Error('expected confirmation');
+    expect(confirmed.decision.executionStatus).toBe('execution_unavailable');
+    expect(demo.placeCalls).toBe(0);
+  });
+
   it('rejects quantities above available position and preserves locked quantity', async () => {
     const service = createService(marketProvider([testSnapshot()]), new FakeDemo([]));
     const position = await service.createManualPosition({

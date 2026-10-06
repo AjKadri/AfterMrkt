@@ -3,7 +3,18 @@
 import { afterMrktApi, AfterMrktApiError } from './lib/aftermrkt-api.js';
 
 const page = document.body.dataset.page;
-const state = { symbol: null, context: null, eventData: null, requestId: 0 };
+const state = {
+  symbol: null,
+  context: null,
+  eventData: null,
+  simulations: null,
+  fullSimulation: null,
+  position: null,
+  pendingDecision: null,
+  decisionEnvelope: null,
+  decisionToken: null,
+  requestId: 0,
+};
 const MARKET_BELT_REFRESH_MS = 30_000;
 
 const $ = (selector) => document.querySelector(selector);
@@ -441,6 +452,67 @@ function bindWorkspaceActions() {
   $('#simulate-button')?.addEventListener('click', () =>
     runSimulationSuite($('#position-quantity')?.value ?? ''),
   );
+  $$('.decision-choice').forEach((button) => {
+    button.addEventListener('click', () => {
+      const kind = button.dataset.decision;
+      if (!kind || !state.fullSimulation) return;
+      state.pendingDecision = kind;
+      state.decisionEnvelope = null;
+      state.decisionToken = null;
+      $$('.decision-choice').forEach((item) =>
+        item.classList.toggle('is-selected', item === button),
+      );
+      const review = $('#decision-review');
+      if (review) review.hidden = false;
+      const totalQuantity = state.fullSimulation.requestedQuantity;
+      const quantity = $('#decision-requested-quantity');
+      if (quantity) quantity.value = decisionQuantityFor(kind, totalQuantity);
+      setText(
+        '#decision-status',
+        kind === 'hold'
+          ? 'Review the position context, then record your hold decision.'
+          : 'Choose the exit quantity and order parameters, then review the exit.',
+      );
+      setText('#decision-result', '');
+      renderDecisionRecord(
+        {
+          decision: kind,
+          providerSymbol: state.symbol,
+          requestedQuantity: quantity?.value ?? totalQuantity,
+          exitPercentage: kind === 'hold' ? '0' : '0',
+          currentPrice: state.fullSimulation.currentPrice,
+          environment: 'SIMULATED',
+          executionStatus: 'awaiting_confirmation',
+          simulation: {
+            ...state.fullSimulation,
+            estimatedVWAP: state.fullSimulation.estimatedVwap,
+            totalExpectedProceeds: state.fullSimulation.estimatedProceeds,
+            slippageVersusMidpointBps: state.fullSimulation.slippageBps,
+            positionPercentageWithin50Bps: state.fullSimulation.fillRatioWithin50Bps,
+            condition: { label: state.fullSimulation.condition },
+            snapshotTimestamp: state.fullSimulation.bookAsOf,
+          },
+          decisionStressTest: state.fullSimulation.decisionStressTest,
+        },
+        { awaitingReview: true },
+      );
+    });
+  });
+  $('#decision-review-button')?.addEventListener('click', () => void reviewTraderDecision());
+  $('#decision-confirm')?.addEventListener('click', () => void confirmTraderDecision());
+  $('#decision-back')?.addEventListener('click', () => {
+    state.pendingDecision = null;
+    state.decisionEnvelope = null;
+    state.decisionToken = null;
+    const review = $('#decision-review');
+    if (review) review.hidden = true;
+    $$('.decision-choice').forEach((item) => item.classList.remove('is-selected'));
+    setText('#decision-result', '');
+  });
+  $('#decision-order-type')?.addEventListener('change', (event) => {
+    const limitWrap = $('#decision-limit-price-wrap');
+    if (limitWrap) limitWrap.hidden = event.target.value !== 'limit';
+  });
   $$('.workspace-preset').forEach((button) => {
     button.addEventListener('click', () => {
       const input = $('#position-quantity');
@@ -476,6 +548,8 @@ function scaleQuantity(value, fraction) {
 
 function renderSimulation(simulations) {
   const [quarter, threeQuarter, full] = simulations;
+  state.simulations = simulations;
+  state.fullSimulation = full ?? null;
   const rows = [
     ['25', quarter],
     ['75', threeQuarter],
@@ -504,6 +578,7 @@ function renderSimulation(simulations) {
   const note = $('.exit-corridor-note');
   if (note && full)
     note.innerHTML = `Observed-book estimate, not guaranteed fill. ${formatNumber(full.unfilledQuantity, '0')} ${full.symbol} remains unfilled against the captured depth. The result is <strong>SIMULATED</strong>; live execution is disabled.`;
+  renderDecisionPanel(full);
 }
 
 function renderExitExplanation(simulation) {
@@ -542,6 +617,229 @@ function renderExitExplanation(simulation) {
   );
 }
 
+function renderDecisionStressTest(stressTest) {
+  const container = $('#decision-stress');
+  if (!container) return;
+  container.classList.toggle('unavailable', stressTest?.status === 'unavailable');
+  container.replaceChildren();
+  const title = document.createElement('h4');
+  title.textContent = 'Decision stress test';
+  container.append(title);
+  if (!stressTest || stressTest.status === 'unavailable') {
+    const message = document.createElement('p');
+    message.textContent =
+      stressTest?.reason ?? 'Qwen decision stress testing is unavailable for this simulation.';
+    container.append(message);
+    return;
+  }
+  const immediate = document.createElement('p');
+  immediate.textContent = `Immediate exit · ${stressTest.immediateExit}`;
+  const evidence = document.createElement('p');
+  evidence.textContent = `Evidence · ${stressTest.evidence}`;
+  const uncertainty = document.createElement('p');
+  uncertainty.textContent = `Main uncertainty · ${stressTest.mainUncertainty}`;
+  const list = document.createElement('ul');
+  stressTest.considerations.forEach((item) => {
+    const row = document.createElement('li');
+    row.textContent = item;
+    list.append(row);
+  });
+  const provenance = document.createElement('p');
+  provenance.textContent = `Qwen · ${stressTest.model} · ${formatTime(stressTest.processedAt)}`;
+  container.append(immediate, evidence, uncertainty, list, provenance);
+}
+
+function renderDecisionPanel(simulation) {
+  const panel = $('#trader-decision');
+  if (!panel) return;
+  panel.hidden = !simulation;
+  if (!simulation) return;
+  renderDecisionStressTest(simulation.decisionStressTest);
+  $$('.decision-choice').forEach((button) => {
+    button.disabled = false;
+    button.classList.toggle('is-selected', button.dataset.decision === state.pendingDecision);
+  });
+}
+
+function decisionQuantityFor(kind, totalQuantity) {
+  return kind === 'partial_exit' ? scaleQuantity(totalQuantity, '0.5') : totalQuantity;
+}
+
+function renderDecisionRecord(decision, { awaitingReview = false } = {}) {
+  const simulation = decision?.simulation;
+  setText('#decision-symbol', decision?.providerSymbol ?? state.symbol ?? '--');
+  setText('#decision-quantity', formatNumber(decision?.requestedQuantity));
+  setText(
+    '#decision-percentage',
+    decision?.exitPercentage === undefined
+      ? '--'
+      : `${(Number(decision.exitPercentage) * 100).toFixed(1)}%`,
+  );
+  setText('#decision-current-price', formatMoney(decision?.currentPrice ?? simulation?.midpoint));
+  setText('#decision-vwap', formatMoney(simulation?.estimatedVWAP ?? simulation?.estimatedVwap));
+  setText(
+    '#decision-proceeds',
+    formatMoney(simulation?.totalExpectedProceeds ?? simulation?.estimatedProceeds),
+  );
+  setText(
+    '#decision-slippage',
+    formatBps(simulation?.slippageVersusMidpointBps ?? simulation?.slippageBps),
+  );
+  setText(
+    '#decision-fill-ratio',
+    simulation
+      ? `${(Number(simulation.positionPercentageWithin50Bps ?? simulation.fillRatioWithin50Bps) * 100).toFixed(1)}%`
+      : '--',
+  );
+  setText('#decision-liquidity', simulation?.condition?.label ?? simulation?.condition ?? '--');
+  setText('#decision-book-time', formatTime(simulation?.snapshotTimestamp ?? simulation?.bookAsOf));
+  setText('#decision-environment', decision?.environment ?? '--');
+  setText('#decision-execution-status', decision?.executionStatus ?? '--');
+  setText(
+    '#decision-review-title',
+    decision?.decision === 'hold'
+      ? 'Review hold decision'
+      : `Review ${decision?.decision === 'partial_exit' ? 'partial' : 'full'} exit`,
+  );
+  setText(
+    '#decision-status',
+    awaitingReview
+      ? 'Review these deterministic values before creating a decision record.'
+      : decision?.environment === 'SIMULATED'
+        ? 'This confirmation records a paper decision. Provider execution is unavailable for manual positions.'
+        : 'This decision remains pending explicit confirmation.',
+  );
+  const quantityInput = $('#decision-requested-quantity');
+  if (quantityInput && decision?.requestedQuantity !== undefined)
+    quantityInput.value = decision.requestedQuantity;
+  const isHold = decision?.decision === 'hold';
+  const reviewButton = $('#decision-review-button');
+  const confirmButton = $('#decision-confirm');
+  if (reviewButton) {
+    reviewButton.hidden = !awaitingReview;
+    reviewButton.textContent = isHold ? 'Review hold decision' : 'Review exit';
+  }
+  if (confirmButton) {
+    confirmButton.hidden = awaitingReview;
+    confirmButton.textContent = isHold ? 'Confirm hold' : 'Confirm exit';
+  }
+  [
+    '#decision-requested-quantity',
+    '#decision-order-type',
+    '#decision-limit-price',
+    '#decision-max-slippage',
+  ].forEach((selector) => {
+    const element = $(selector);
+    if (element) element.disabled = !awaitingReview;
+  });
+  const limitWrap = $('#decision-limit-price-wrap');
+  if (limitWrap) limitWrap.hidden = $('#decision-order-type')?.value !== 'limit';
+  renderDecisionStressTest(
+    decision?.decisionStressTest ?? state.fullSimulation?.decisionStressTest ?? null,
+  );
+}
+
+async function ensureManualPosition(quantity) {
+  if (state.position?.providerSymbol === state.symbol && state.position.quantity === quantity) {
+    return state.position;
+  }
+  const response = await afterMrktApi.createManualPosition(state.symbol, quantity);
+  state.position = response.data.position;
+  return state.position;
+}
+
+async function reviewTraderDecision() {
+  const simulation = state.fullSimulation;
+  const kind = state.pendingDecision;
+  if (!simulation || !kind) {
+    setText(
+      '#decision-status',
+      'Run a successful simulation, then choose Hold, partial exit, or full exit.',
+    );
+    return;
+  }
+  const totalQuantity = simulation.requestedQuantity;
+  const quantityInput = $('#decision-requested-quantity');
+  const requestedQuantity = quantityInput?.value.trim() ?? totalQuantity;
+  if (!/^\d+(?:\.\d+)?$/.test(requestedQuantity) || Number(requestedQuantity) <= 0) {
+    setText('#decision-status', 'Enter a positive quantity before reviewing the decision.');
+    quantityInput?.focus();
+    return;
+  }
+  const reviewButton = $('#decision-review-button');
+  if (reviewButton) {
+    reviewButton.disabled = true;
+    reviewButton.textContent = 'Preparing review…';
+  }
+  try {
+    const position = await ensureManualPosition(totalQuantity);
+    const orderType = $('#decision-order-type')?.value ?? 'market';
+    const limitPrice = $('#decision-limit-price')?.value.trim() ?? '';
+    const maxSlippage = $('#decision-max-slippage')?.value.trim() ?? '';
+    const response = await afterMrktApi.createDecision({
+      positionId: position.positionId,
+      symbol: state.symbol,
+      decision: kind,
+      requestedQuantity: kind === 'hold' ? totalQuantity : requestedQuantity,
+      simulationSnapshotId: simulation.bookSnapshotId,
+      ...(kind === 'hold' ? {} : { orderType }),
+      ...(kind === 'hold' || orderType !== 'limit' || !limitPrice ? {} : { limitPrice }),
+      ...(kind === 'hold' || !maxSlippage ? {} : { maximumAcceptableSlippageBps: maxSlippage }),
+    });
+    state.decisionEnvelope = response;
+    state.decisionToken = response.data.confirmationToken;
+    renderDecisionRecord(response.data.decision);
+    setText('#decision-result', 'Decision ready. No order has been placed.');
+  } catch (error) {
+    setText('#decision-status', errorText(error));
+  } finally {
+    if (reviewButton) reviewButton.disabled = false;
+  }
+}
+
+async function confirmTraderDecision() {
+  const decision = state.decisionEnvelope?.data?.decision;
+  if (!decision || !state.decisionToken) return;
+  const button = $('#decision-confirm');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Confirming…';
+  }
+  try {
+    const response = await afterMrktApi.confirmDecision(decision.decisionId, state.decisionToken);
+    const result = response.data.result;
+    if (result.status === 'refresh_required') {
+      state.decisionToken = result.confirmationToken;
+      state.decisionEnvelope = {
+        data: { decision: result.decision, confirmationToken: result.confirmationToken },
+      };
+      renderDecisionRecord(result.decision, { awaitingReview: false });
+      setText(
+        '#decision-status',
+        'The book changed before confirmation. Review the refreshed deterministic values and confirm again.',
+      );
+      return;
+    }
+    state.decisionEnvelope = { data: { decision: result.decision } };
+    renderDecisionRecord(result.decision, { awaitingReview: false });
+    setText(
+      '#decision-result',
+      result.decision.executionStatus === 'execution_unavailable'
+        ? 'PAPER DECISION RECORDED · EXECUTION UNAVAILABLE · NO ORDER CREATED'
+        : result.decision.decision === 'hold'
+          ? 'HOLD DECISION RECORDED · NO ORDER CREATED'
+          : `DECISION CONFIRMED · ${String(result.decision.executionStatus).toUpperCase()}`,
+    );
+  } catch (error) {
+    setText('#decision-status', errorText(error));
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = decision.decision === 'hold' ? 'Confirm hold' : 'Confirm exit';
+    }
+  }
+}
+
 async function runSimulationSuite(quantity) {
   if (!state.symbol || !/^\d+(?:\.\d+)?$/.test(quantity.trim()) || Number(quantity) <= 0) {
     setText('#market-warning', 'Enter a valid positive position quantity to run the simulation.');
@@ -557,7 +855,7 @@ async function runSimulationSuite(quantity) {
   try {
     const quantities = ['0.25', '0.75', '1'].map((fraction) => scaleQuantity(quantity, fraction));
     const results = await Promise.all(
-      quantities.map((item) => afterMrktApi.simulate(symbol, item)),
+      quantities.map((item, index) => afterMrktApi.simulate(symbol, item, index === 2)),
     );
     if (requestId !== state.requestId || state.symbol !== symbol) return;
     renderSimulation(results.map((result) => result.data));
@@ -599,6 +897,12 @@ async function loadWorkspace(symbol) {
 }
 
 function resetWorkspaceView(symbol) {
+  state.simulations = null;
+  state.fullSimulation = null;
+  state.position = null;
+  state.pendingDecision = null;
+  state.decisionEnvelope = null;
+  state.decisionToken = null;
   setText('#context-status', `Loading ${symbol} live context…`);
   setText('#instrument-native', 'Loading…');
   setText('#instrument-company', 'Loading…');
@@ -653,6 +957,19 @@ function resetWorkspaceView(symbol) {
   setText('#exit-slippage', '--');
   setText('#exit-executable', '--');
   renderExitExplanation(null);
+  renderDecisionStressTest(null);
+  const decisionPanel = $('#trader-decision');
+  if (decisionPanel) decisionPanel.hidden = true;
+  const decisionReview = $('#decision-review');
+  if (decisionReview) decisionReview.hidden = true;
+  const decisionConfirm = $('#decision-confirm');
+  if (decisionConfirm) decisionConfirm.hidden = true;
+  $$('.decision-choice').forEach((button) => {
+    button.classList.remove('is-selected');
+    button.disabled = true;
+  });
+  setText('#decision-result', '');
+  setText('#decision-status', 'Run a successful simulation to choose a trader decision.');
   const note = $('.exit-corridor-note');
   if (note) {
     note.innerHTML =

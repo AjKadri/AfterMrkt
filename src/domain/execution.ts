@@ -13,8 +13,10 @@ import {
 import type { MarketSnapshotStore } from './snapshots.js';
 import type { NormalizedRealityInstrument, OrderBookSnapshot } from './types.js';
 import type { ExecutionStore } from './execution-store.js';
+import type { DecisionStressTestResult } from './decision-stress-test.js';
 import type {
   ConfirmationResult,
+  CreatedTraderDecision,
   DemoPositionsResult,
   ExecutionIntent,
   ExecutionOrder,
@@ -22,7 +24,11 @@ import type {
   ExecutionOrderView,
   ExecutionValidation,
   ManualPositionInput,
+  PreparedTraderDecision,
   Position,
+  TraderDecision,
+  TraderDecisionConfirmationResult,
+  TraderDecisionKind,
 } from './execution-types.js';
 
 export const DEFAULT_EXECUTION_CONFIG = Object.freeze({
@@ -49,6 +55,23 @@ export type CreateExecutionIntentInput = {
 export type CreatedExecutionIntent = {
   intent: ExecutionIntent;
   confirmationToken: string;
+};
+
+export type PrepareTraderDecisionInput = {
+  positionId: string;
+  providerSymbol: string;
+  decision: TraderDecisionKind;
+  requestedQuantity: string;
+  simulationSnapshotId?: string;
+  orderType?: 'market' | 'limit';
+  limitPrice?: string;
+  maximumAcceptableSlippageBps?: string;
+};
+
+export type SaveTraderDecisionInput = {
+  prepared: PreparedTraderDecision;
+  decisionStressTest: DecisionStressTestResult | null;
+  currentPrice: string | null;
 };
 
 export type ExecutionServiceOptions = {
@@ -84,6 +107,7 @@ export type ExecutionErrorCode =
   | 'CONFIRMATION_INVALID'
   | 'CONFIRMATION_EXPIRED'
   | 'CONFIRMATION_REUSED'
+  | 'DECISION_NOT_FOUND'
   | 'REFRESH_REQUIRED'
   | 'ORDER_NOT_FOUND'
   | 'ORDER_NOT_CANCELABLE'
@@ -323,6 +347,236 @@ export class ExecutionService {
     if (intent === null)
       throw new ExecutionError('INTENT_NOT_FOUND', 'execution intent was not found');
     return intent;
+  }
+
+  async prepareTraderDecision(input: PrepareTraderDecisionInput): Promise<PreparedTraderDecision> {
+    const position = await this.store.getPosition(input.positionId);
+    if (position === null) throw new ExecutionError('POSITION_NOT_FOUND', 'position was not found');
+    if (position.providerSymbol !== input.providerSymbol) {
+      throw new ExecutionError('INVALID_SYMBOL', 'position and decision symbols do not match');
+    }
+    if (input.decision === 'hold') {
+      const snapshotId = input.simulationSnapshotId;
+      if (snapshotId === undefined) {
+        throw new ExecutionError(
+          'REFRESH_REQUIRED',
+          'a successful simulation snapshot is required to record a hold decision',
+        );
+      }
+      const snapshot = this.snapshots.getOrderBook(snapshotId);
+      if (snapshot === null || snapshot.providerSymbol !== input.providerSymbol) {
+        throw new ExecutionError(
+          'REFRESH_REQUIRED',
+          'the simulation snapshot is no longer available',
+        );
+      }
+      const simulation = this.simulate(
+        decimal(input.requestedQuantity || position.quantity, 'requestedQuantity'),
+        snapshot,
+      );
+      return {
+        decision: input.decision,
+        position,
+        intent: null,
+        simulation,
+        bookSource: snapshot.source,
+        orderType: null,
+        limitPrice: null,
+        maximumAcceptableSlippageBps: null,
+        confirmationToken: null,
+      };
+    }
+    const created = await this.createIntent({
+      positionId: input.positionId,
+      providerSymbol: input.providerSymbol,
+      orderType: input.orderType ?? 'market',
+      requestedQuantity: input.requestedQuantity,
+      ...(input.limitPrice === undefined ? {} : { limitPrice: input.limitPrice }),
+      ...(input.maximumAcceptableSlippageBps === undefined
+        ? {}
+        : { maximumAcceptableSlippageBps: input.maximumAcceptableSlippageBps }),
+    });
+    return {
+      decision: input.decision,
+      position,
+      intent: created.intent,
+      simulation: created.intent.simulation,
+      bookSource: created.intent.bookSource,
+      orderType: created.intent.orderType,
+      limitPrice: created.intent.limitPrice,
+      maximumAcceptableSlippageBps: created.intent.maximumAcceptableSlippageBps,
+      confirmationToken: created.confirmationToken,
+    };
+  }
+
+  async saveTraderDecision(input: SaveTraderDecisionInput): Promise<CreatedTraderDecision> {
+    const prepared = input.prepared;
+    const now = this.now();
+    const decisionId = randomId();
+    const requestedQuantity = prepared.simulation?.requestedQuantity ?? prepared.position.quantity;
+    const exitPercentage =
+      prepared.decision === 'hold'
+        ? '0'
+        : new Decimal(requestedQuantity).div(prepared.position.quantity).toFixed();
+    const confirmationToken = prepared.confirmationToken ?? randomBytes(24).toString('base64url');
+    const decision: TraderDecision = {
+      decisionId,
+      decision: prepared.decision,
+      positionId: prepared.position.positionId,
+      environment: prepared.position.environment,
+      providerSymbol: prepared.position.providerSymbol,
+      positionQuantity: prepared.position.quantity,
+      requestedQuantity,
+      exitPercentage,
+      currentPrice: input.currentPrice,
+      orderType: prepared.orderType,
+      limitPrice: prepared.limitPrice,
+      maximumAcceptableSlippageBps: prepared.maximumAcceptableSlippageBps,
+      intentId: prepared.intent?.intentId ?? null,
+      simulation: prepared.simulation,
+      bookSnapshotId: prepared.simulation?.snapshotId ?? null,
+      bookSource: prepared.bookSource,
+      decisionStressTest: input.decisionStressTest,
+      createdAt: now.toISOString(),
+      confirmedAt: null,
+      status: 'awaiting_confirmation',
+      executionStatus: 'awaiting_confirmation',
+    };
+    await this.store.saveDecision(decision);
+    if (prepared.intent === null) {
+      await this.store.saveConfirmation({
+        tokenHash: sha256(confirmationToken),
+        intentId: decisionId,
+        expiresAt: new Date(now.getTime() + this.config.confirmationTtlMs).toISOString(),
+        usedAt: null,
+      });
+    }
+    return { decision, confirmationToken };
+  }
+
+  async getDecision(decisionId: string): Promise<TraderDecision> {
+    const decision = await this.store.getDecision(decisionId);
+    if (decision === null)
+      throw new ExecutionError('DECISION_NOT_FOUND', 'trader decision was not found');
+    return decision;
+  }
+
+  async confirmTraderDecision(
+    decisionId: string,
+    confirmationToken: string,
+  ): Promise<TraderDecisionConfirmationResult> {
+    const decision = await this.getDecision(decisionId);
+    if (decision.status !== 'awaiting_confirmation') {
+      throw new ExecutionError('CONFIRMATION_REUSED', 'trader decision has already been confirmed');
+    }
+    if (decision.intentId === null) {
+      await this.confirmationForIntent(decisionId, confirmationToken);
+      const confirmed = await this.store.saveDecision({
+        ...decision,
+        status: 'confirmed',
+        confirmedAt: this.now().toISOString(),
+        executionStatus: 'not_applicable',
+      });
+      return { status: 'confirmed', decision: confirmed, intent: null, order: null };
+    }
+    if (decision.environment === 'SIMULATED') {
+      const position = await this.store.getPosition(decision.positionId);
+      if (position === null)
+        throw new ExecutionError('POSITION_NOT_FOUND', 'position was not found');
+      const intent = await this.getIntent(decision.intentId);
+      const freshBook = await this.fetchFreshOrderBook(decision.providerSymbol);
+      const freshSimulation = this.simulate(
+        decimal(decision.requestedQuantity, 'requestedQuantity'),
+        freshBook,
+      );
+      if (decision.simulation !== null && materiallyChanged(decision.simulation, freshSimulation)) {
+        await this.confirmationForIntent(decision.intentId, confirmationToken);
+        const refreshedIntent = await this.refreshIntent(
+          intent,
+          freshBook,
+          freshSimulation,
+          position.availableQuantity,
+          0,
+        );
+        const refreshedDecision = await this.store.saveDecision({
+          ...decision,
+          simulation: freshSimulation,
+          bookSnapshotId: freshBook.snapshotId,
+          bookSource: freshBook.source,
+          decisionStressTest: null,
+          status: 'awaiting_confirmation',
+          executionStatus: 'awaiting_confirmation',
+        });
+        return {
+          status: 'refresh_required',
+          decision: refreshedDecision,
+          confirmationToken: refreshedIntent.confirmationToken,
+          simulation: freshSimulation,
+        };
+      }
+      await this.confirmationForIntent(decision.intentId, confirmationToken);
+      const confirmed = await this.store.saveDecision({
+        ...decision,
+        status: 'confirmed',
+        confirmedAt: this.now().toISOString(),
+        executionStatus: 'execution_unavailable',
+      });
+      return { status: 'confirmed', decision: confirmed, intent, order: null };
+    }
+    const result = await this.confirmIntent(decision.intentId, confirmationToken);
+    if (result.status === 'refresh_required') {
+      const refreshed = await this.store.saveDecision({
+        ...decision,
+        simulation: result.simulation,
+        bookSnapshotId: result.intent.bookSnapshotId,
+        bookSource: result.intent.bookSource,
+        decisionStressTest: null,
+        status: 'awaiting_confirmation',
+        executionStatus: 'awaiting_confirmation',
+      });
+      return {
+        status: 'refresh_required',
+        decision: refreshed,
+        confirmationToken: result.confirmationToken,
+        simulation: result.simulation,
+      };
+    }
+    const confirmed = await this.store.saveDecision({
+      ...decision,
+      status: result.status,
+      confirmedAt: this.now().toISOString(),
+      executionStatus: result.status,
+    });
+    return {
+      status: result.status,
+      decision: confirmed,
+      intent: result.intent,
+      order: result.order,
+    };
+  }
+
+  private async confirmationForIntent(intentId: string, confirmationToken: string): Promise<void> {
+    const confirmation = await this.store.getConfirmation(sha256(confirmationToken));
+    if (confirmation === null || confirmation.intentId !== intentId) {
+      throw new ExecutionError('CONFIRMATION_INVALID', 'confirmation token is invalid');
+    }
+    if (confirmation.usedAt !== null) {
+      throw new ExecutionError(
+        'CONFIRMATION_REUSED',
+        'confirmation token has already been consumed',
+      );
+    }
+    if (Date.parse(confirmation.expiresAt) <= this.now().getTime()) {
+      throw new ExecutionError('CONFIRMATION_EXPIRED', 'confirmation token has expired');
+    }
+    if (
+      !(await this.store.consumeConfirmation(sha256(confirmationToken), this.now().toISOString()))
+    ) {
+      throw new ExecutionError(
+        'CONFIRMATION_REUSED',
+        'confirmation token has already been consumed',
+      );
+    }
   }
 
   async confirmIntent(intentId: string, confirmationToken: string): Promise<ConfirmationResult> {

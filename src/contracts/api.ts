@@ -13,6 +13,7 @@ const ExecutionSimulationInputSchema = z
       .regex(/^[a-f0-9]{64}$/)
       .optional(),
     maximumAcceptableSlippageBps: DecimalStringSchema.optional(),
+    includeDecisionStressTest: z.boolean().optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -40,6 +41,9 @@ export const ExecutionSimulationRequestSchema = ExecutionSimulationInputSchema.t
     ...(value.maximumAcceptableSlippageBps === undefined
       ? {}
       : { maximumAcceptableSlippageBps: value.maximumAcceptableSlippageBps }),
+    ...(value.includeDecisionStressTest === undefined
+      ? {}
+      : { includeDecisionStressTest: value.includeDecisionStressTest }),
   }),
 );
 
@@ -100,10 +104,27 @@ export const ExecutionConfirmationRequestSchema = z
   })
   .strict();
 
+export const TraderDecisionRequestSchema = z
+  .object({
+    positionId: z.string().regex(/^[a-f0-9]{64}$/),
+    symbol: z.string().trim().min(1),
+    decision: z.enum(['hold', 'partial_exit', 'full_exit']),
+    requestedQuantity: DecimalStringSchema,
+    simulationSnapshotId: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    orderType: z.enum(['market', 'limit']).optional(),
+    limitPrice: DecimalStringSchema.optional(),
+    maximumAcceptableSlippageBps: DecimalStringSchema.optional(),
+  })
+  .strict();
+
 export type ExecutionSimulationRequest = z.infer<typeof ExecutionSimulationRequestSchema>;
 export type ManualPositionRequest = z.infer<typeof ManualPositionRequestSchema>;
 export type ExecutionIntentRequest = z.infer<typeof ExecutionIntentRequestSchema>;
 export type ExecutionConfirmationRequest = z.infer<typeof ExecutionConfirmationRequestSchema>;
+export type TraderDecisionRequest = z.infer<typeof TraderDecisionRequestSchema>;
 
 export type ApiMode = 'LIVE' | 'REPLAY';
 
@@ -160,6 +181,7 @@ export type ApiErrorCode =
   | 'CONFIRMATION_INVALID'
   | 'CONFIRMATION_EXPIRED'
   | 'CONFIRMATION_REUSED'
+  | 'DECISION_NOT_FOUND'
   | 'REFRESH_REQUIRED'
   | 'ORDER_NOT_FOUND'
   | 'ORDER_NOT_CANCELABLE'

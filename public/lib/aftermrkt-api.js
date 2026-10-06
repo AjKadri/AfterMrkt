@@ -83,8 +83,30 @@ export const afterMrktApi = {
   getEventAnalysis(eventId) {
     return request(`/api/events/${encodeURIComponent(eventId)}/analysis`);
   },
-  simulate(symbol, quantity) {
-    return request('/api/execution/simulations', jsonOptions({ symbol, quantity }));
+  simulate(symbol, quantity, includeDecisionStressTest = false) {
+    return request(
+      '/api/execution/simulations',
+      jsonOptions({
+        symbol,
+        quantity,
+        ...(includeDecisionStressTest ? { includeDecisionStressTest: true } : {}),
+      }),
+    );
+  },
+  createManualPosition(symbol, quantity) {
+    return request('/api/execution/positions', jsonOptions({ symbol, quantity }));
+  },
+  createDecision(input) {
+    return request('/api/execution/decisions', jsonOptions(input));
+  },
+  getDecision(decisionId) {
+    return request(`/api/execution/decisions/${encodeURIComponent(decisionId)}`);
+  },
+  confirmDecision(decisionId, confirmationToken) {
+    return request(
+      `/api/execution/decisions/${encodeURIComponent(decisionId)}/confirm`,
+      jsonOptions({ confirmationToken }),
+    );
   },
   getReplays() {
     return request('/api/replays');

@@ -8,11 +8,13 @@ import type {
   ExecutionIntent,
   ExecutionOrder,
   Position,
+  TraderDecision,
 } from '../domain/execution-types.js';
 import type { ExecutionStore } from '../domain/execution-store.js';
 
 export class InMemoryExecutionStore implements ExecutionStore {
   private readonly positions = new Map<string, Position>();
+  private readonly decisions = new Map<string, TraderDecision>();
   private readonly intents = new Map<string, ExecutionIntent>();
   private readonly orders = new Map<string, ExecutionOrder>();
   private readonly confirmations = new Map<string, ExecutionConfirmation>();
@@ -32,6 +34,16 @@ export class InMemoryExecutionStore implements ExecutionStore {
     return [...this.positions.values()].filter(
       (position) => source === undefined || position.source === source,
     );
+  }
+
+  async saveDecision(decision: TraderDecision): Promise<TraderDecision> {
+    const stored = freezeClone(decision);
+    this.decisions.set(decision.decisionId, stored);
+    return stored;
+  }
+
+  async getDecision(decisionId: string): Promise<TraderDecision | null> {
+    return this.decisions.get(decisionId) ?? null;
   }
 
   async saveIntent(intent: ExecutionIntent): Promise<ExecutionIntent> {
@@ -106,6 +118,15 @@ export class FileExecutionStore implements ExecutionStore {
   async listPositions(source?: Position['source']): Promise<Position[]> {
     const records = await readDirectory<Position>(this.path('positions'));
     return records.filter((position) => source === undefined || position.source === source);
+  }
+
+  async saveDecision(decision: TraderDecision): Promise<TraderDecision> {
+    await writeMutable(this.path('decisions', `${decision.decisionId}.json`), decision);
+    return freezeClone(decision);
+  }
+
+  async getDecision(decisionId: string): Promise<TraderDecision | null> {
+    return readRecord<TraderDecision>(this.path('decisions', `${decisionId}.json`));
   }
 
   async saveIntent(intent: ExecutionIntent): Promise<ExecutionIntent> {
