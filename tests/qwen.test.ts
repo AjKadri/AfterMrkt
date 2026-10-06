@@ -3,6 +3,7 @@ import {
   QWEN_DECISION_STRESS_JSON_SCHEMA,
   QWEN_DECISION_STRESS_PROMPT_VERSION,
   QWEN_EVENT_JSON_SCHEMA,
+  QWEN_WORKSPACE_QUESTION_JSON_SCHEMA,
   QwenClient,
   parseQwenDecisionStressTest,
   parseQwenEvent,
@@ -119,6 +120,79 @@ describe('Qwen event contract', () => {
     const client = new QwenClient();
     expect(client.responseFormat.type).toBe('json_schema');
     expect(client.thinkingMode).toBe('disabled');
+  });
+
+  it('sends an exact fact allow-list and bounded retry instruction for workspace questions', async () => {
+    const originalFetch = globalThis.fetch;
+    const requestBodies: Record<string, unknown>[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({
+          model: 'qwen3.8-max',
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  status: 'answered',
+                  topic: 'liquidity',
+                  answer: 'The observed book is available as deterministic context.',
+                  supportingFactIds: ['liquidity_condition'],
+                  uncertainties: ['The book can change before review.'],
+                  model: 'qwen3.8-max',
+                  promptVersion: 'workspace-question-v1',
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+    try {
+      const client = new QwenClient({
+        apiKey: 'test-fixture-key',
+        baseUrl: 'https://example.test/v1',
+        timeoutMs: 1234,
+      });
+      await client.askWorkspaceQuestion({
+        providerSymbol: 'RMUUSDT',
+        nativeTicker: 'MU',
+        configuredModel: 'qwen3.8-max',
+        question: 'What does liquidity say about this exit?',
+        contextAsOf: '2026-09-29T22:00:00.000Z',
+        facts: [
+          {
+            id: 'liquidity_condition',
+            label: 'Liquidity condition',
+            status: 'available',
+            summary: 'Liquidity condition: execution-normal',
+          },
+        ],
+        retryInstruction: 'Rewrite as neutral research context.',
+      });
+
+      const body = requestBodies[0];
+      const messages = body?.messages as Array<{ role: string; content: string }>;
+      expect(messages[0]?.content).toContain('bounded validation retry');
+      expect(messages[0]?.content).toContain('neutral research context');
+      expect(messages[1]?.content).toContain('allowedSupportingFactIds');
+      expect(messages[1]?.content).toContain('configuredModel');
+      expect(messages[0]?.content).toContain('Set model to exactly qwen3.8-max');
+      expect(messages[1]?.content).toContain('liquidity_condition');
+      expect(body?.response_format).toEqual({
+        type: 'json_schema',
+        json_schema: QWEN_WORKSPACE_QUESTION_JSON_SCHEMA,
+      });
+      expect(QWEN_WORKSPACE_QUESTION_JSON_SCHEMA.schema).toMatchObject({
+        properties: {
+          answer: { maxLength: 500 },
+          uncertainties: { items: { maxLength: 120 } },
+        },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('sends explicit non-thinking mode and captures reasoning-token metadata', async () => {

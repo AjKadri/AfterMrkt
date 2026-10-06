@@ -397,6 +397,7 @@ describe('AfterMrkt API contracts', () => {
         data: {
           status: string;
           answer: string;
+          attemptCount: number;
           supportingFactIds: string[];
           supportingFacts: Array<{ id: string; value: string | null }>;
           contextTimestamp: string;
@@ -414,6 +415,7 @@ describe('AfterMrkt API contracts', () => {
         supportingFactIds: ['event_status'],
         contextTimestamp: NOW.toISOString(),
         processedAt: NOW.toISOString(),
+        attemptCount: 1,
         marketObservedAt: '2026-09-29T21:59:59.000Z',
         marketFreshness: { state: 'fresh' },
         sourceObservationTimes: [
@@ -455,6 +457,7 @@ describe('AfterMrkt API contracts', () => {
       expect(liquidity.status).toBe(200);
       expect(liquidityBody.data).toMatchObject({
         status: 'answered',
+        attemptCount: 1,
         supportingFactIds: ['liquidity_condition', 'exit_fill_ratio'],
       });
       expect(liquidityBody.data.supportingFacts.map((fact) => fact.id)).toEqual([

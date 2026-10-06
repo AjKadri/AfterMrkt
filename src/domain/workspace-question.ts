@@ -6,6 +6,7 @@ import {
   type QwenCall,
   type QwenWorkspaceQuestionPacket,
 } from '../adapters/qwen/index.js';
+import { ProbeError } from '../lib/errors.js';
 import type { AfterMrktContext } from './market-context.js';
 import type { ExitSimulation } from './market-quality.js';
 import type { TraderDecision } from './execution-types.js';
@@ -47,8 +48,29 @@ export type WorkspaceQuestionResult = {
   processedAt: string;
   contextTimestamp: string;
   inputHash: string;
+  attemptCount: number;
   reason?: string;
 };
+
+type WorkspaceQuestionValidationCode =
+  | 'malformed_output'
+  | 'numeric_claim'
+  | 'recommendation'
+  | 'unknown_fact'
+  | 'missing_supporting_facts'
+  | 'prompt_version'
+  | 'model_mismatch'
+  | 'provider_model_mismatch';
+
+class WorkspaceQuestionValidationError extends Error {
+  constructor(
+    readonly code: WorkspaceQuestionValidationCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'WorkspaceQuestionValidationError';
+  }
+}
 
 export function buildWorkspaceFactRegistry(
   input: Pick<
@@ -261,6 +283,7 @@ export async function runWorkspaceQuestion(
     processedAt: input.processedAt,
     contextTimestamp: input.context.asOf,
     inputHash,
+    attemptCount: 0,
   };
 
   if (!isContextualQuestion(input.question)) {
@@ -278,56 +301,145 @@ export async function runWorkspaceQuestion(
     };
   }
 
+  const factPacket = facts.map((fact) => ({
+    id: fact.id,
+    label: fact.label,
+    status: fact.status,
+    summary: qwenSummary(fact),
+  }));
+  const packet: Omit<QwenWorkspaceQuestionPacket, 'retryInstruction'> = {
+    providerSymbol: input.providerSymbol,
+    nativeTicker: input.context.instrument?.nativeTicker ?? null,
+    configuredModel: client.model,
+    question: input.question,
+    contextAsOf: input.context.asOf,
+    facts: factPacket,
+  };
+  let attemptCount = 0;
+  let retryInstruction: string | undefined;
+  let lastError: unknown;
+
+  while (attemptCount < 2) {
+    attemptCount += 1;
+    try {
+      const call = await client.askWorkspaceQuestion({
+        ...packet,
+        ...(retryInstruction === undefined ? {} : { retryInstruction }),
+      });
+      const validated = validateWorkspaceQuestionCall(call, client.model, facts);
+      return {
+        facts,
+        result: {
+          ...validated.parsed,
+          ...base,
+          status: validated.parsed.status,
+          providerReportedModel: validated.providerReportedModel,
+          attemptCount,
+        },
+      };
+    } catch (error) {
+      lastError = error;
+      if (attemptCount === 1 && error instanceof WorkspaceQuestionValidationError) {
+        const nextRetryInstruction = retryInstructionFor(
+          error.code,
+          facts.map((fact) => fact.id),
+        );
+        if (nextRetryInstruction !== null) {
+          retryInstruction = nextRetryInstruction;
+          continue;
+        }
+      }
+      break;
+    }
+  }
+
+  return {
+    facts,
+    result: {
+      ...base,
+      attemptCount,
+      status: 'unavailable',
+      topic: topicForQuestion(input.question),
+      answer: 'Qwen is unavailable. Your deterministic AfterMrkt context remains available.',
+      supportingFactIds: [],
+      uncertainties: ['The contextual Qwen explanation could not be validated.'],
+      reason: safeFailureReason(lastError),
+    },
+  };
+}
+
+function validateWorkspaceQuestionCall(
+  call: QwenCall,
+  configuredModel: string,
+  facts: WorkspaceGroundingFact[],
+): { parsed: ReturnType<typeof parseQwenWorkspaceQuestion>; providerReportedModel: string | null } {
+  let parsed: ReturnType<typeof parseQwenWorkspaceQuestion>;
   try {
-    const call = await client.askWorkspaceQuestion({
-      providerSymbol: input.providerSymbol,
-      nativeTicker: input.context.instrument?.nativeTicker ?? null,
-      question: input.question,
-      contextAsOf: input.context.asOf,
-      facts: facts.map((fact) => ({
-        id: fact.id,
-        label: fact.label,
-        status: fact.status,
-        summary: qwenSummary(fact),
-      })),
-    });
-    const parsed = parseQwenWorkspaceQuestion(call.content);
-    const providerReportedModel = call.providerReportedModel ?? null;
-    if (parsed.model !== client.model) {
-      throw new Error('Qwen workspace question model did not match the configured model');
-    }
-    if (providerReportedModel !== null && providerReportedModel !== client.model) {
-      throw new Error('Qwen provider-reported model did not match the configured model');
-    }
-    const knownFactIds = new Set(facts.map((fact) => fact.id));
-    if (parsed.supportingFactIds.some((factId) => !knownFactIds.has(factId))) {
-      throw new Error('Qwen workspace question referenced an unknown fact ID');
-    }
-    if (parsed.status === 'answered' && parsed.supportingFactIds.length === 0) {
-      throw new Error('Qwen workspace question answered without supporting facts');
-    }
-    return {
-      facts,
-      result: {
-        ...parsed,
-        ...base,
-        status: parsed.status,
-        providerReportedModel,
-      },
-    };
+    parsed = parseQwenWorkspaceQuestion(call.content);
   } catch (error) {
-    return {
-      facts,
-      result: {
-        ...base,
-        status: 'unavailable',
-        topic: topicForQuestion(input.question),
-        answer: 'Qwen is unavailable. Your deterministic AfterMrkt context remains available.',
-        supportingFactIds: [],
-        uncertainties: ['The contextual Qwen explanation could not be validated.'],
-        reason: safeFailureReason(error),
-      },
-    };
+    if (error instanceof ProbeError && error.status === 'malformed_provider_data') {
+      throw new WorkspaceQuestionValidationError(
+        validationCodeForParserMessage(error.message),
+        error.message,
+      );
+    }
+    throw error;
+  }
+  const providerReportedModel = call.providerReportedModel ?? null;
+  if (parsed.model !== configuredModel) {
+    throw new WorkspaceQuestionValidationError(
+      'model_mismatch',
+      'Qwen workspace question model did not match the configured model',
+    );
+  }
+  if (providerReportedModel !== null && providerReportedModel !== configuredModel) {
+    throw new WorkspaceQuestionValidationError(
+      'provider_model_mismatch',
+      'Qwen provider-reported model did not match the configured model',
+    );
+  }
+  const knownFactIds = new Set(facts.map((fact) => fact.id));
+  if (parsed.supportingFactIds.some((factId) => !knownFactIds.has(factId))) {
+    throw new WorkspaceQuestionValidationError(
+      'unknown_fact',
+      'Qwen workspace question referenced an unknown fact ID',
+    );
+  }
+  if (parsed.status === 'answered' && parsed.supportingFactIds.length === 0) {
+    throw new WorkspaceQuestionValidationError(
+      'missing_supporting_facts',
+      'Qwen workspace question answered without supporting facts',
+    );
+  }
+  return { parsed, providerReportedModel };
+}
+
+function validationCodeForParserMessage(message: string): WorkspaceQuestionValidationCode {
+  if (message.includes('numeric claim')) return 'numeric_claim';
+  if (message.includes('trading recommendation')) return 'recommendation';
+  if (message.includes('prompt version')) return 'prompt_version';
+  return 'malformed_output';
+}
+
+function retryInstructionFor(
+  code: WorkspaceQuestionValidationCode,
+  allowedFactIds: string[],
+): string | null {
+  switch (code) {
+    case 'numeric_claim':
+      return 'The previous answer used numeric literals. Rewrite it without digits, numeric words used as values, prices, quantities, percentages, basis points, or financial formatting. Deterministic AfterMrkt facts render numbers separately.';
+    case 'recommendation':
+      return 'The previous answer used recommendation or action language. Rewrite it as neutral research context. Do not tell the trader what to do, choose a decision, or use recommendation, buy, sell, hold, exit, execute, or order language.';
+    case 'unknown_fact':
+      return `Use only supportingFactIds from this exact allowed list: ${JSON.stringify(allowedFactIds)}.`;
+    case 'missing_supporting_facts':
+      return `Because the status is answered, include at least one supportingFactId from this exact allowed list: ${JSON.stringify(allowedFactIds)}.`;
+    case 'malformed_output':
+      return 'Return only the required JSON object. Keep the answer and uncertainties within the schema limits, and include every required field exactly once.';
+    case 'prompt_version':
+    case 'model_mismatch':
+    case 'provider_model_mismatch':
+      return null;
   }
 }
 
@@ -364,6 +476,12 @@ function topicForQuestion(question: string): WorkspaceQuestionResult['topic'] {
 function safeFailureReason(error: unknown): string {
   if (error instanceof Error && error.message === 'QWEN_API_KEY is not set') {
     return 'Qwen API key is not configured.';
+  }
+  if (error instanceof ProbeError) {
+    return `Qwen provider request failed: ${error.status}.`;
+  }
+  if (error instanceof WorkspaceQuestionValidationError) {
+    return `Qwen response failed validation: ${error.code}.`;
   }
   return 'The Qwen response did not pass the contextual research contract.';
 }
