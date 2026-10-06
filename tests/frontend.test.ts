@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { createContext, Script } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 
 async function readPublicFile(path: string): Promise<string> {
@@ -211,5 +212,30 @@ describe('integrated AfterMrkt frontend', () => {
     expect(app).toContain('PAPER DECISION RECORDED · EXECUTION UNAVAILABLE · NO ORDER CREATED');
     expect(app).toContain('HOLD DECISION RECORDED · NO ORDER CREATED');
     expect(workspace).toContain("The trader's final call");
+  });
+
+  it('scales preset quantities with exact decimal arithmetic', async () => {
+    const app = await readPublicFile('app.js');
+    const functionSource = app.match(
+      /function scaleQuantity\(value, fraction\) \{[\s\S]*?(?=\n\nfunction renderSimulation)/,
+    )?.[0];
+    expect(functionSource).toBeDefined();
+    const context = createContext({});
+    new Script(`${functionSource}\nthis.scaleQuantity = scaleQuantity;`).runInContext(context);
+    const scaleQuantity = (
+      context as unknown as {
+        scaleQuantity: (value: string, fraction: string) => string | null;
+      }
+    ).scaleQuantity;
+    expect(scaleQuantity('25', '0.5')).toBe('12.5');
+    expect(scaleQuantity('25', '0.25')).toBe('6.25');
+    expect(scaleQuantity('25', '0.75')).toBe('18.75');
+    expect(scaleQuantity('0.05', '0.5')).toBe('0.025');
+    expect(scaleQuantity('0.05', '0.25')).toBe('0.0125');
+    expect(app).toContain('decisionStressTestInputHash === decision.decisionStressTest.inputHash');
+    expect(app).toContain("kind === 'full_exit' ? '1' : '0.5'");
+    expect(app).not.toContain(
+      'decision?.decisionStressTest ?? state.fullSimulation?.decisionStressTest',
+    );
   });
 });

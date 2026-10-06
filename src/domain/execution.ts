@@ -32,8 +32,8 @@ import type {
 } from './execution-types.js';
 
 export const DEFAULT_EXECUTION_CONFIG = Object.freeze({
-  intentTtlMs: 30_000,
-  confirmationTtlMs: 15_000,
+  intentTtlMs: 120_000,
+  confirmationTtlMs: 120_000,
   balanceFreshMaxAgeMs: DEFAULT_FRESHNESS_CONFIG.freshMaxAgeMs,
 });
 
@@ -107,6 +107,7 @@ export type ExecutionErrorCode =
   | 'CONFIRMATION_INVALID'
   | 'CONFIRMATION_EXPIRED'
   | 'CONFIRMATION_REUSED'
+  | 'DECISION_QUANTITY_MISMATCH'
   | 'DECISION_NOT_FOUND'
   | 'REFRESH_REQUIRED'
   | 'ORDER_NOT_FOUND'
@@ -355,6 +356,10 @@ export class ExecutionService {
     if (position.providerSymbol !== input.providerSymbol) {
       throw new ExecutionError('INVALID_SYMBOL', 'position and decision symbols do not match');
     }
+    const requestedQuantity =
+      input.decision === 'hold' ? position.availableQuantity : input.requestedQuantity;
+    const requested = decimal(requestedQuantity, 'requestedQuantity');
+    validateDecisionQuantity(input.decision, requested, position.availableQuantity);
     if (input.decision === 'hold') {
       const snapshotId = input.simulationSnapshotId;
       if (snapshotId === undefined) {
@@ -370,10 +375,7 @@ export class ExecutionService {
           'the simulation snapshot is no longer available',
         );
       }
-      const simulation = this.simulate(
-        decimal(input.requestedQuantity || position.quantity, 'requestedQuantity'),
-        snapshot,
-      );
+      const simulation = this.simulate(requested, snapshot);
       return {
         decision: input.decision,
         position,
@@ -414,11 +416,17 @@ export class ExecutionService {
     const now = this.now();
     const decisionId = randomId();
     const requestedQuantity = prepared.simulation?.requestedQuantity ?? prepared.position.quantity;
+    const requested = decimal(requestedQuantity, 'requestedQuantity');
+    validateDecisionQuantity(prepared.decision, requested, prepared.position.availableQuantity);
     const exitPercentage =
       prepared.decision === 'hold'
         ? '0'
-        : new Decimal(requestedQuantity).div(prepared.position.quantity).toFixed();
-    const confirmationToken = prepared.confirmationToken ?? randomBytes(24).toString('base64url');
+        : requested.div(prepared.position.availableQuantity).toFixed();
+    const confirmationToken = randomBytes(24).toString('base64url');
+    const createdAt = now.toISOString();
+    const confirmationExpiresAt = new Date(
+      now.getTime() + this.config.confirmationTtlMs,
+    ).toISOString();
     const decision: TraderDecision = {
       decisionId,
       decision: prepared.decision,
@@ -437,7 +445,8 @@ export class ExecutionService {
       bookSnapshotId: prepared.simulation?.snapshotId ?? null,
       bookSource: prepared.bookSource,
       decisionStressTest: input.decisionStressTest,
-      createdAt: now.toISOString(),
+      decisionStressTestInputHash: input.decisionStressTest?.inputHash ?? null,
+      createdAt: createdAt,
       confirmedAt: null,
       status: 'awaiting_confirmation',
       executionStatus: 'awaiting_confirmation',
@@ -447,8 +456,27 @@ export class ExecutionService {
       await this.store.saveConfirmation({
         tokenHash: sha256(confirmationToken),
         intentId: decisionId,
-        expiresAt: new Date(now.getTime() + this.config.confirmationTtlMs).toISOString(),
+        expiresAt: confirmationExpiresAt,
         usedAt: null,
+      });
+    } else {
+      if (prepared.confirmationToken !== null) {
+        await this.store.consumeConfirmation(sha256(prepared.confirmationToken), createdAt);
+      }
+      await this.store.saveIntent({
+        ...prepared.intent,
+        expiresAt: new Date(now.getTime() + this.config.intentTtlMs).toISOString(),
+        confirmationExpiresAt,
+      });
+      await this.store.saveConfirmation({
+        tokenHash: sha256(confirmationToken),
+        intentId: prepared.intent.intentId,
+        expiresAt: confirmationExpiresAt,
+        usedAt: null,
+      });
+      await this.audit('confirmation_issued', prepared.intent.intentId, null, {
+        expiresAt: confirmationExpiresAt,
+        reason: 'final review payload completed',
       });
     }
     return { decision, confirmationToken };
@@ -504,6 +532,7 @@ export class ExecutionService {
           bookSnapshotId: freshBook.snapshotId,
           bookSource: freshBook.source,
           decisionStressTest: null,
+          decisionStressTestInputHash: null,
           status: 'awaiting_confirmation',
           executionStatus: 'awaiting_confirmation',
         });
@@ -531,6 +560,7 @@ export class ExecutionService {
         bookSnapshotId: result.intent.bookSnapshotId,
         bookSource: result.intent.bookSource,
         decisionStressTest: null,
+        decisionStressTestInputHash: null,
         status: 'awaiting_confirmation',
         executionStatus: 'awaiting_confirmation',
       });
@@ -848,6 +878,7 @@ export class ExecutionService {
     const confirmationExpiresAt = new Date(
       now.getTime() + this.config.confirmationTtlMs,
     ).toISOString();
+    const expiresAt = new Date(now.getTime() + this.config.intentTtlMs).toISOString();
     const validation: ExecutionValidation = {
       status: 'refresh_required',
       reasons: [
@@ -871,6 +902,7 @@ export class ExecutionService {
       simulationId: snapshot.snapshotId,
       bookSource: snapshot.source,
       simulation,
+      expiresAt,
       confirmationExpiresAt,
       status: 'awaiting_confirmation',
       validation,
@@ -1095,6 +1127,35 @@ function validateRequestedQuantity(quantity: Decimal, availableQuantity: string)
       'requested quantity exceeds available position quantity',
       {
         requestedQuantity: quantity.toFixed(),
+        availableQuantity: available.toFixed(),
+      },
+    );
+  }
+}
+
+function validateDecisionQuantity(
+  decision: TraderDecisionKind,
+  requestedQuantity: Decimal,
+  availableQuantity: string,
+): void {
+  validateRequestedQuantity(requestedQuantity, availableQuantity);
+  const available = decimal(availableQuantity, 'availableQuantity');
+  if (decision === 'full_exit' && !requestedQuantity.equals(available)) {
+    throw new ExecutionError(
+      'DECISION_QUANTITY_MISMATCH',
+      'full_exit must use the entire available position quantity',
+      {
+        requestedQuantity: requestedQuantity.toFixed(),
+        availableQuantity: available.toFixed(),
+      },
+    );
+  }
+  if (decision === 'partial_exit' && !requestedQuantity.lt(available)) {
+    throw new ExecutionError(
+      'DECISION_QUANTITY_MISMATCH',
+      'partial_exit must use a positive quantity smaller than the available position quantity',
+      {
+        requestedQuantity: requestedQuantity.toFixed(),
         availableQuantity: available.toFixed(),
       },
     );

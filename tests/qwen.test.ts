@@ -7,6 +7,8 @@ import {
   parseQwenDecisionStressTest,
   parseQwenEvent,
 } from '../src/adapters/qwen/index.js';
+import type { QwenCall } from '../src/adapters/qwen/index.js';
+import { runDecisionStressTest } from '../src/domain/decision-stress-test.js';
 import providerContract from './fixtures/qwen/provider-contract.json';
 import thinkingComparison from './fixtures/qwen/thinking-comparison.json';
 
@@ -228,5 +230,65 @@ describe('Qwen decision stress contract', () => {
         }),
       ),
     ).toThrow(/recommendation/);
+  });
+
+  it('rejects numeric prose so financial values stay deterministic', () => {
+    expect(() =>
+      parseQwenDecisionStressTest(
+        JSON.stringify({
+          immediateExit: 'The captured book could fill 50% of the quantity.',
+          evidence: 'The deterministic simulation is the evidence.',
+          mainUncertainty: 'The next book is unknown.',
+          considerations: ['Review the supplied facts.'],
+          model: 'qwen3.8-max',
+          promptVersion: QWEN_DECISION_STRESS_PROMPT_VERSION,
+        }),
+      ),
+    ).toThrow(/numeric claim/);
+  });
+
+  it('rejects model provenance that does not match the configured client', async () => {
+    const result = await runDecisionStressTest(
+      {
+        model: 'qwen3.8-max',
+        stressTestDecision: async () =>
+          ({
+            content: JSON.stringify({
+              immediateExit: 'The observed depth presents a trade-off.',
+              evidence: 'The deterministic simulation is the evidence.',
+              mainUncertainty: 'The next book is unknown.',
+              considerations: ['Review the supplied facts.'],
+              model: 'another-model',
+              promptVersion: QWEN_DECISION_STRESS_PROMPT_VERSION,
+            }),
+            providerReportedModel: 'another-model',
+          }) as QwenCall,
+      },
+      {
+        providerSymbol: 'RMUUSDT',
+        nativeTicker: 'MU',
+        moveSinceNativeClosePercent: null,
+        sessionState: 'unavailable',
+        sourceEventStatus: 'not_applicable',
+        sourceEventFacts: [],
+        spreadBps: null,
+        freshnessState: 'fresh',
+        liquidityCondition: 'execution-normal',
+        requestedQuantity: '5',
+        filledQuantity: '5',
+        unfilledQuantity: '0',
+        fillRatioWithin50Bps: '1',
+        estimatedVwap: '100',
+        slippageBps: '0',
+        nativePriceConfirmation: 'unavailable',
+        limitations: [],
+        processedAt: '2026-09-29T22:00:00.000Z',
+      },
+    );
+    expect(result).toMatchObject({
+      status: 'unavailable',
+      model: 'qwen3.8-max',
+      providerReportedModel: null,
+    });
   });
 });

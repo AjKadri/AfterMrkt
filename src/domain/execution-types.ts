@@ -187,6 +187,7 @@ export type TraderDecision = {
   bookSnapshotId: string | null;
   bookSource: SourceMetadata | null;
   decisionStressTest: DecisionStressTestResult | null;
+  decisionStressTestInputHash: string | null;
   createdAt: string;
   confirmedAt: string | null;
   status: TraderDecisionStatus;

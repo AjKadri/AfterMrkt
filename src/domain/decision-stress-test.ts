@@ -50,7 +50,14 @@ export async function runDecisionStressTest(
   try {
     const call = await client.stressTestDecision(packet);
     const parsed = parseQwenDecisionStressTest(call.content);
-    return toAvailableResult(parsed, call, processedAt, inputHash);
+    const providerReportedModel = call.providerReportedModel ?? null;
+    if (parsed.model !== client.model) {
+      throw new Error('Qwen decision stress test model did not match the configured model');
+    }
+    if (providerReportedModel !== null && providerReportedModel !== client.model) {
+      throw new Error('Qwen provider-reported model did not match the configured model');
+    }
+    return toAvailableResult(parsed, providerReportedModel, client.model, processedAt, inputHash);
   } catch (error) {
     return {
       status: 'unavailable',
@@ -66,7 +73,8 @@ export async function runDecisionStressTest(
 
 function toAvailableResult(
   parsed: QwenDecisionStressTest,
-  call: QwenCall,
+  providerReportedModel: string | null,
+  configuredModel: string,
   processedAt: string,
   inputHash: string,
 ): DecisionStressTestResult {
@@ -74,7 +82,7 @@ function toAvailableResult(
     canonicalJson({
       inputHash,
       output: parsed,
-      providerReportedModel: call.providerReportedModel,
+      providerReportedModel,
     }),
   );
   return {
@@ -84,8 +92,8 @@ function toAvailableResult(
     evidence: parsed.evidence,
     mainUncertainty: parsed.mainUncertainty,
     considerations: parsed.considerations,
-    model: parsed.model,
-    providerReportedModel: call.providerReportedModel,
+    model: configuredModel,
+    providerReportedModel,
     promptVersion: parsed.promptVersion,
     processedAt,
     inputHash,

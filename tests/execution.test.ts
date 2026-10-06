@@ -183,9 +183,22 @@ describe('deterministic position and confirmation workflow', () => {
     });
     const created = await service.saveTraderDecision({
       prepared,
-      decisionStressTest: null,
+      decisionStressTest: {
+        status: 'available',
+        stressTestId: 'stress-test',
+        immediateExit: 'The observed depth has a trade-off.',
+        evidence: 'The deterministic simulation is the evidence.',
+        mainUncertainty: 'The next book may differ.',
+        considerations: ['Review the deterministic facts.'],
+        model: 'qwen3.8-max',
+        providerReportedModel: 'qwen3.8-max',
+        promptVersion: 'decision-stress-test-v1',
+        processedAt: NOW.toISOString(),
+        inputHash: 'a'.repeat(64),
+      },
       currentPrice: '100.5',
     });
+    expect(created.decision.decisionStressTestInputHash).toBe('a'.repeat(64));
     const refreshed = await service.confirmTraderDecision(
       created.decision.decisionId,
       created.confirmationToken,
@@ -193,6 +206,7 @@ describe('deterministic position and confirmation workflow', () => {
     expect(refreshed.status).toBe('refresh_required');
     if (refreshed.status !== 'refresh_required') throw new Error('expected refresh');
     expect(refreshed.decision.decisionStressTest).toBeNull();
+    expect(refreshed.decision.decisionStressTestInputHash).toBeNull();
     const confirmed = await service.confirmTraderDecision(
       refreshed.decision.decisionId,
       refreshed.confirmationToken,
@@ -201,6 +215,91 @@ describe('deterministic position and confirmation workflow', () => {
     if (confirmed.status === 'refresh_required') throw new Error('expected confirmation');
     expect(confirmed.decision.executionStatus).toBe('execution_unavailable');
     expect(demo.placeCalls).toBe(0);
+  });
+
+  it('rejects decision labels whose quantities disagree with the available position', async () => {
+    const service = createService(marketProvider([testSnapshot()]), new FakeDemo([]));
+    const position = await service.createManualPosition({
+      providerSymbol: 'RMUUSDT',
+      quantity: '5',
+    });
+
+    await expect(
+      service.prepareTraderDecision({
+        positionId: position.positionId,
+        providerSymbol: 'RMUUSDT',
+        decision: 'full_exit',
+        requestedQuantity: '2.5',
+        orderType: 'market',
+      }),
+    ).rejects.toMatchObject({
+      code: 'DECISION_QUANTITY_MISMATCH',
+      message: 'full_exit must use the entire available position quantity',
+    });
+    await expect(
+      service.prepareTraderDecision({
+        positionId: position.positionId,
+        providerSymbol: 'RMUUSDT',
+        decision: 'partial_exit',
+        requestedQuantity: '5',
+        orderType: 'market',
+      }),
+    ).rejects.toMatchObject({
+      code: 'DECISION_QUANTITY_MISMATCH',
+      message:
+        'partial_exit must use a positive quantity smaller than the available position quantity',
+    });
+    await expect(
+      service.prepareTraderDecision({
+        positionId: position.positionId,
+        providerSymbol: 'RMUUSDT',
+        decision: 'partial_exit',
+        requestedQuantity: '0',
+        orderType: 'market',
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_QUANTITY',
+      message: 'requested quantity must be greater than zero',
+    });
+  });
+
+  it('renews the final review lifetime after a slow stress-test phase', async () => {
+    let currentTimeMs = NOW.getTime();
+    const service = createService(
+      marketProvider([testSnapshot(), testSnapshot()]),
+      new FakeDemo([]),
+      () => new Date(currentTimeMs),
+    );
+    const position = await service.createManualPosition({
+      providerSymbol: 'RMUUSDT',
+      quantity: '5',
+    });
+    const prepared = await service.prepareTraderDecision({
+      positionId: position.positionId,
+      providerSymbol: 'RMUUSDT',
+      decision: 'partial_exit',
+      requestedQuantity: '2.5',
+      orderType: 'market',
+    });
+    const initialToken = prepared.confirmationToken;
+    currentTimeMs += 20_000;
+    const created = await service.saveTraderDecision({
+      prepared,
+      decisionStressTest: null,
+      currentPrice: '100.5',
+    });
+    expect(initialToken).not.toBe(created.confirmationToken);
+    const intent = await service.getIntent(created.decision.intentId as string);
+    expect(Date.parse(intent.expiresAt) - currentTimeMs).toBe(120_000);
+    expect(Date.parse(intent.confirmationExpiresAt) - currentTimeMs).toBe(120_000);
+
+    const confirmed = await service.confirmTraderDecision(
+      created.decision.decisionId,
+      created.confirmationToken,
+    );
+    expect(confirmed.status).toBe('confirmed');
+    if (confirmed.status === 'refresh_required') throw new Error('expected confirmation');
+    expect(confirmed.decision.executionStatus).toBe('execution_unavailable');
   });
 
   it('rejects quantities above available position and preserves locked quantity', async () => {
@@ -382,13 +481,17 @@ describe('deterministic position and confirmation workflow', () => {
   });
 });
 
-function createService(provider: PublicMarketDataProvider, demo: FakeDemo): ExecutionService {
+function createService(
+  provider: PublicMarketDataProvider,
+  demo: FakeDemo,
+  now: () => Date = () => NOW,
+): ExecutionService {
   return new ExecutionService({
     marketData: provider,
     demo,
     snapshots: new InMemorySnapshotStore(),
     store: new InMemoryExecutionStore(),
-    now: () => NOW,
+    now,
   });
 }
 

@@ -1350,37 +1350,38 @@ async function generateDecisionStressTest(
   simulation: ReturnType<typeof simulateExit>,
   processedAt: string,
 ) {
+  const context = await loadDecisionStressContext(options, simulation.providerSymbol, processedAt);
   const store = options.eventStore ?? options.replayStore;
   const events =
     store === undefined
       ? []
       : await safeStoreCall(() => store.listSourceEvents(simulation.providerSymbol));
   const analyses = store === undefined ? [] : await safeStoreCall(() => store.listEventAnalyses());
-  const eventContext = deriveUnifiedEventContext({
-    providerSymbol: simulation.providerSymbol,
-    events,
-    analyses,
-    contextAsOf: processedAt,
-    markets: null,
-    calendar: null,
-    ...(store === undefined ? { eventSourceAvailable: false } : {}),
-  });
-  const qualifyingIds = new Set(eventContext.events.map((event) => event.eventId));
-  const sourceEventFacts = analyses
-    .filter(
-      (analysis) =>
-        qualifyingIds.has(analysis.eventId) &&
-        analysis.status === 'validated' &&
-        analysis.sourceBound,
-    )
-    .flatMap((analysis) => analysis.facts.map((fact) => fact.statement));
-  const sourceEventStatus = events.length === 0 ? 'not_applicable' : eventContext.status;
-  const nativeTicker = events.find((event) => event.nativeTicker.length > 0)?.nativeTicker ?? null;
+  const eventContext =
+    context?.eventContext ??
+    deriveUnifiedEventContext({
+      providerSymbol: simulation.providerSymbol,
+      events,
+      analyses,
+      contextAsOf: processedAt,
+      markets: null,
+      calendar: null,
+      ...(store === undefined ? { eventSourceAvailable: false } : {}),
+    });
+  const sourceEventFacts = eventContext.events.flatMap((event) =>
+    event.facts.map((fact) => fact.statement),
+  );
+  const sourceEventStatus =
+    eventContext.qualifyingEventCount === 0 ? 'not_applicable' : eventContext.status;
+  const nativeTicker =
+    context?.instrument?.nativeTicker ??
+    events.find((event) => event.nativeTicker.length > 0)?.nativeTicker ??
+    null;
   return runDecisionStressTest(qwen, {
     providerSymbol: simulation.providerSymbol,
     nativeTicker,
-    moveSinceNativeClosePercent: null,
-    sessionState: 'unavailable',
+    moveSinceNativeClosePercent: context?.move.percentageMove ?? null,
+    sessionState: context?.session.status ?? 'unavailable',
     sourceEventStatus,
     sourceEventFacts,
     spreadBps: simulation.spreadBps,
@@ -1395,12 +1396,73 @@ async function generateDecisionStressTest(
     nativePriceConfirmation: 'unavailable',
     limitations: [
       simulation.estimateDisclaimer,
+      ...(context?.limitations ?? []),
       'Native-price confirmation is unavailable in the current product phase.',
       ...(simulation.freshness.state === 'fresh'
         ? []
         : ['The observed book is not fresh enough to treat as current execution context.']),
     ],
     processedAt,
+  });
+}
+
+async function loadDecisionStressContext(
+  options: ApiServerOptions,
+  providerSymbol: string,
+  asOf: string,
+): Promise<AfterMrktContext | null> {
+  const universe = await safeProviderCall(() => options.marketData.discoverRealityInstruments());
+  const instrument = universe?.data.find((item) => item.providerSymbol === providerSymbol);
+  if (instrument === undefined) return null;
+  const [ticker, marketState, marketCalendar] = await Promise.all([
+    safeProviderCall(() => options.marketData.getTicker(providerSymbol)),
+    safeProviderCall(() => options.marketData.getMarketStates()),
+    safeProviderCall(() => options.marketData.getMarketCalendar()),
+  ]);
+  const sessionSchedule = deriveSessionContext({
+    asOf,
+    markets: marketState?.data ?? null,
+    calendar: marketCalendar?.data ?? null,
+  });
+  const historicalCandles =
+    sessionSchedule.previousRegularSessionClose === null
+      ? null
+      : await safeProviderCall(() =>
+          options.marketData.getHistoricalCandles(providerSymbol, {
+            interval: '1m',
+            limit: 100,
+            endTime: String(Date.parse(sessionSchedule.previousRegularSessionClose as string)),
+          }),
+        );
+  const store = options.eventStore ?? options.replayStore;
+  const events =
+    store === undefined ? [] : await safeStoreCall(() => store.listSourceEvents(providerSymbol));
+  const analyses = store === undefined ? [] : await safeStoreCall(() => store.listEventAnalyses());
+  return buildAfterMrktContext({
+    mode: 'LIVE',
+    asOf,
+    providerSymbol,
+    instrument,
+    ticker: ticker?.data ?? null,
+    orderBook: null,
+    markets: marketState?.data ?? null,
+    calendar: marketCalendar?.data ?? null,
+    suspension: null,
+    suspensionStatus: 'unavailable',
+    candles:
+      historicalCandles === null
+        ? null
+        : {
+            data: historicalCandles.data,
+            interval: '1m',
+            source: historicalCandles.source,
+            sourceRef: toSourceReference(historicalCandles.source, providerSymbol, null),
+          },
+    events,
+    analyses,
+    sourceRefs: [],
+    ...(store === undefined ? { eventSourceAvailable: false } : {}),
+    ...(options.qualityConfig === undefined ? {} : { qualityConfig: options.qualityConfig }),
   });
 }
 

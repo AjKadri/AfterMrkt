@@ -193,18 +193,18 @@ Add `"includeDecisionStressTest": true` to one successful live simulation reques
 }
 ```
 
-`status: "unavailable"` is an honest degraded state when Qwen is not configured, unreachable, or returns invalid/recommendation language. A missing qualifying SEC event does not disable the stress test. The event status is passed as `not_applicable`, while the market and simulation facts remain available. Qwen produces trade-off prose only. Deterministic AfterMrkt logic owns every financial value and the trader owns the decision.
+`status: "unavailable"` is an honest degraded state when Qwen is not configured, unreachable, or returns invalid/recommendation language. A missing qualifying SEC event does not disable the stress test. The event status is passed as `not_applicable`, while the market and simulation facts remain available. Qwen produces trade-off prose without numeric literals. The configured model and any provider-reported model must agree before prose is marked available. Deterministic AfterMrkt logic owns every financial value and the trader owns the decision.
 
 ## Trader decisions
 
 The workspace uses the existing execution position, intent, validation, confirmation-token, refresh, reconciliation, and order state system:
 
 - `POST /api/execution/positions` creates a local manual position. It is `SIMULATED` and cannot submit a provider order.
-- `POST /api/execution/decisions` prepares `hold`, `partial_exit`, or `full_exit`. Exit decisions create the existing execution intent and preserve its deterministic simulation, provider symbol, book snapshot, validation, order choice, limit price, and slippage guard. The response includes a one-time `confirmationToken` for the current browser flow.
+- `POST /api/execution/decisions` prepares `hold`, `partial_exit`, or `full_exit`. Exit decisions create the existing execution intent and preserve its deterministic simulation, provider symbol, book snapshot, validation, order choice, limit price, and slippage guard. `full_exit` must equal the entire currently available quantity. `partial_exit` must be positive and strictly less than that quantity. The response includes a newly issued one-time `confirmationToken` after the stress-test/review payload completes.
 - `GET /api/execution/decisions/:decisionId` returns the persisted decision record.
 - `POST /api/execution/decisions/:decisionId/confirm` records the explicit trader confirmation. Hold ends in `not_applicable`. A manual exit ends in `execution_unavailable` with no provider order. If the observed book changes, the response is `refresh_required` with a new simulation and confirmation token.
 
-The decision record preserves the provider symbol, requested quantity, exit percentage, observed price, estimated VWAP, proceeds, slippage, fill ratio, liquidity condition, book timestamp, Qwen stress-test provenance, decision timestamp, simulation snapshot, execution environment, and actual execution status. Confirmation tokens are short-lived, single-use, and are not persisted by the browser.
+The decision record preserves the provider symbol, requested quantity, exit percentage, observed price, estimated VWAP, proceeds, slippage, fill ratio, liquidity condition, book timestamp, Qwen stress-test provenance, decision timestamp, simulation snapshot, execution environment, and actual execution status. The final review confirmation window is two minutes, tokens are single-use, and tokens are not persisted by the browser. Confirmation always re-fetches and revalidates the order book before any provider action. If that book changes, the refreshed decision clears the prior stress-test result and its input-hash binding. The browser does not reuse older Qwen prose beside refreshed deterministic values.
 
 The current capability object remains `simulation: "available"`, `bitgetDemoReality: "unsupported_or_inaccessible"`, and `liveExecution: "disabled"`. The direct intent confirmation route remains the only path that could submit a supported Demo order in a future capability-gated environment. The current workspace does not present a successful Demo execution.
 

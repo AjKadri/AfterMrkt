@@ -173,6 +173,171 @@ describe('AfterMrkt API contracts', () => {
     }
   });
 
+  it('passes validated session and native-close move facts into the stress test', async () => {
+    const provider = testProvider();
+    provider.getMarketStates = async () => ({
+      source: TEST_FIXTURE_SOURCE,
+      data: [
+        {
+          market: 'US',
+          stateList: [
+            {
+              state: 'regular',
+              startTime: '09:30',
+              endTime: '16:00',
+              timeZone: 'America/New_York',
+            },
+          ],
+        },
+      ],
+    });
+    provider.getMarketCalendar = async () => ({
+      source: TEST_FIXTURE_SOURCE,
+      data: { timeZone: 'America/New_York', regularConfig: ['Saturday', 'Sunday'] },
+    });
+    provider.getHistoricalCandles = async () => ({
+      source: TEST_FIXTURE_SOURCE,
+      data: [
+        {
+          openTime: '2026-09-29T19:59:00.000Z',
+          open: '100',
+          high: '100',
+          low: '100',
+          close: '100',
+          volume: '1',
+          quoteVolume: '100',
+          extras: [],
+        },
+      ],
+    });
+    let observedInput: Parameters<DecisionStressTestClient['stressTestDecision']>[0] | null = null;
+    const qwen: DecisionStressTestClient = {
+      model: 'qwen3.8-max',
+      stressTestDecision: async (input) => {
+        observedInput = input;
+        return {
+          content: JSON.stringify({
+            immediateExit: 'The observed depth presents a trade-off.',
+            evidence: 'The deterministic simulation is the evidence.',
+            mainUncertainty: 'The next book is unknown.',
+            considerations: ['Review the supplied facts.'],
+            model: 'qwen3.8-max',
+            promptVersion: 'decision-stress-test-v1',
+          }),
+          providerReportedModel: 'qwen3.8-max',
+        } as QwenCall;
+      },
+    };
+    const server = createApiServer({ marketData: provider, qwen, now: () => NOW });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('test server did not expose a port');
+    }
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/execution/simulations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ symbol: 'RMUUSDT', quantity: '5', includeDecisionStressTest: true }),
+      });
+      expect(response.status).toBe(200);
+      expect(observedInput).toMatchObject({
+        moveSinceNativeClosePercent: '0.5',
+        sessionState: 'closed',
+        nativeTicker: 'MU',
+      });
+      expect(
+        (await response.json()) as { data: { decisionStressTest: { status: string } } },
+      ).toMatchObject({
+        data: { decisionStressTest: { status: 'available' } },
+      });
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
+
+  it('keeps the final decision confirmation valid after a slow Qwen response', async () => {
+    let currentTimeMs = NOW.getTime();
+    const qwen: DecisionStressTestClient = {
+      model: 'qwen3.8-max',
+      stressTestDecision: async () => {
+        currentTimeMs += 20_000;
+        return {
+          content: JSON.stringify({
+            immediateExit: 'The captured depth presents an execution trade-off.',
+            evidence: 'The deterministic simulation supplies the execution evidence.',
+            mainUncertainty: 'The book may change before confirmation.',
+            considerations: ['Review the deterministic facts before confirming.'],
+            model: 'qwen3.8-max',
+            promptVersion: 'decision-stress-test-v1',
+          }),
+          providerReportedModel: 'qwen3.8-max',
+        } as QwenCall;
+      },
+    };
+    const server = createApiServer({
+      marketData: testProvider(),
+      qwen,
+      now: () => new Date(currentTimeMs),
+    });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('test server did not expose a port');
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    try {
+      const positionResponse = await fetch(`${baseUrl}/api/execution/positions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ symbol: 'RMUUSDT', quantity: '5' }),
+      });
+      const positionBody = (await positionResponse.json()) as {
+        data: { position: { positionId: string } };
+      };
+      const decisionResponse = await fetch(`${baseUrl}/api/execution/decisions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          positionId: positionBody.data.position.positionId,
+          symbol: 'RMUUSDT',
+          decision: 'partial_exit',
+          requestedQuantity: '2.5',
+          orderType: 'market',
+        }),
+      });
+      const decisionBody = (await decisionResponse.json()) as {
+        data: {
+          decision: { decisionId: string; decisionStressTest: { status: string } };
+          confirmationToken: string;
+        };
+      };
+      expect(decisionResponse.status).toBe(200);
+      expect(decisionBody.data.decision.decisionStressTest.status).toBe('available');
+
+      const confirmResponse = await fetch(
+        `${baseUrl}/api/execution/decisions/${decisionBody.data.decision.decisionId}/confirm`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ confirmationToken: decisionBody.data.confirmationToken }),
+        },
+      );
+      expect(confirmResponse.status).toBe(200);
+      expect(
+        (await confirmResponse.json()) as {
+          data: { result: { decision: { executionStatus: string } } };
+        },
+      ).toMatchObject({
+        data: { result: { decision: { executionStatus: 'execution_unavailable' } } },
+      });
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
+
   it('exposes a server-issued order-book snapshot and accepts only that snapshot ID for simulation', async () => {
     const snapshots = new InMemorySnapshotStore();
     const server = createApiServer({
@@ -414,6 +579,49 @@ describe('AfterMrkt API contracts', () => {
       const positionBody = (await positionResponse.json()) as {
         data: { position: { positionId: string } };
       };
+
+      const fullMismatch = await fetch(`${baseUrl}/api/execution/decisions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          positionId: positionBody.data.position.positionId,
+          symbol: 'RMUUSDT',
+          decision: 'full_exit',
+          requestedQuantity: '2.5',
+          orderType: 'market',
+        }),
+      });
+      expect(fullMismatch.status).toBe(400);
+      expect(
+        (await fullMismatch.json()) as { error: { code: string; message: string } },
+      ).toMatchObject({
+        error: {
+          code: 'DECISION_QUANTITY_MISMATCH',
+          message: 'full_exit must use the entire available position quantity',
+        },
+      });
+
+      const partialMismatch = await fetch(`${baseUrl}/api/execution/decisions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          positionId: positionBody.data.position.positionId,
+          symbol: 'RMUUSDT',
+          decision: 'partial_exit',
+          requestedQuantity: '5',
+          orderType: 'market',
+        }),
+      });
+      expect(partialMismatch.status).toBe(400);
+      expect(
+        (await partialMismatch.json()) as { error: { code: string; message: string } },
+      ).toMatchObject({
+        error: {
+          code: 'DECISION_QUANTITY_MISMATCH',
+          message:
+            'partial_exit must use a positive quantity smaller than the available position quantity',
+        },
+      });
 
       const holdResponse = await fetch(`${baseUrl}/api/execution/decisions`, {
         method: 'POST',

@@ -479,7 +479,7 @@ function bindWorkspaceActions() {
           decision: kind,
           providerSymbol: state.symbol,
           requestedQuantity: quantity?.value ?? totalQuantity,
-          exitPercentage: kind === 'hold' ? '0' : '0',
+          exitPercentage: kind === 'hold' ? '0' : kind === 'full_exit' ? '1' : '0.5',
           currentPrice: state.fullSimulation.currentPrice,
           environment: 'SIMULATED',
           executionStatus: 'awaiting_confirmation',
@@ -538,9 +538,15 @@ function scaleQuantity(value, fraction) {
   const digits = BigInt(whole + decimal || '0');
   const denominator =
     fraction === '0.25' || fraction === '0.75' ? 4n : fraction === '0.5' ? 2n : 1n;
-  const numerator = fraction === '0.75' ? (digits * 3n) / denominator : digits / denominator;
-  const scale = decimal.length;
-  const raw = numerator.toString().padStart(scale + 1, '0');
+  const multiplier = fraction === '0.75' ? 3n : 1n;
+  let numerator = digits * multiplier;
+  let extraScale = 0;
+  while (numerator % denominator !== 0n) {
+    numerator *= 10n;
+    extraScale += 1;
+  }
+  const scale = decimal.length + extraScale;
+  const raw = (numerator / denominator).toString().padStart(scale + 1, '0');
   const split = raw.length - scale;
   const output = scale ? `${raw.slice(0, split)}.${raw.slice(split)}` : raw;
   return output.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
@@ -645,7 +651,7 @@ function renderDecisionStressTest(stressTest) {
     list.append(row);
   });
   const provenance = document.createElement('p');
-  provenance.textContent = `Qwen · ${stressTest.model} · ${formatTime(stressTest.processedAt)}`;
+  provenance.textContent = `Qwen · ${stressTest.model} · ${formatTime(stressTest.processedAt)} · input ${stressTest.inputHash}`;
   container.append(immediate, evidence, uncertainty, list, provenance);
 }
 
@@ -732,11 +738,49 @@ function renderDecisionRecord(decision, { awaitingReview = false } = {}) {
     const element = $(selector);
     if (element) element.disabled = !awaitingReview;
   });
+  if (quantityInput) quantityInput.readOnly = decision?.decision !== 'partial_exit';
   const limitWrap = $('#decision-limit-price-wrap');
   if (limitWrap) limitWrap.hidden = $('#decision-order-type')?.value !== 'limit';
-  renderDecisionStressTest(
-    decision?.decisionStressTest ?? state.fullSimulation?.decisionStressTest ?? null,
-  );
+  const stressTest =
+    decision?.decisionStressTest !== null &&
+    decision?.decisionStressTest !== undefined &&
+    decision?.decisionStressTestInputHash === decision.decisionStressTest.inputHash
+      ? decision.decisionStressTest
+      : null;
+  renderDecisionStressTest(stressTest);
+}
+
+function simulationViewFromDecision(decision, previousSimulation) {
+  const simulation = decision?.simulation;
+  if (!simulation) return previousSimulation;
+  return {
+    ...(previousSimulation ?? {}),
+    symbol: decision.providerSymbol,
+    bookSnapshotId: decision.bookSnapshotId ?? simulation.snapshotId,
+    currentPrice: decision.currentPrice,
+    requestedQuantity: simulation.requestedQuantity,
+    filledQuantity: simulation.filledQuantity,
+    unfilledQuantity: simulation.unfilledQuantity,
+    bestBid: simulation.bestBid,
+    midpoint: simulation.midpoint,
+    estimatedVwap: simulation.estimatedVWAP,
+    estimatedProceeds: simulation.totalExpectedProceeds,
+    absoluteSpread: simulation.absoluteSpread,
+    spreadBps: simulation.spreadBps,
+    slippageBps: simulation.slippageVersusMidpointBps,
+    slippageVsBestBidBps: simulation.slippageVersusBestBidBps,
+    levelsConsumed: simulation.levelsConsumed,
+    executableWithin25Bps: simulation.quantityExecutableWithin25Bps,
+    executableWithin50Bps: simulation.quantityExecutableWithin50Bps,
+    fillRatioWithin25Bps: simulation.quantityExecutableWithin25Bps,
+    fillRatioWithin50Bps: simulation.positionPercentageWithin50Bps,
+    condition: simulation.condition.label,
+    reasons: simulation.reasons,
+    bookAsOf: simulation.snapshotTimestamp,
+    receivedAt: simulation.receivedTimestamp,
+    freshness: simulation.freshness,
+    decisionStressTest: null,
+  };
 }
 
 async function ensureManualPosition(quantity) {
@@ -809,6 +853,7 @@ async function confirmTraderDecision() {
     const response = await afterMrktApi.confirmDecision(decision.decisionId, state.decisionToken);
     const result = response.data.result;
     if (result.status === 'refresh_required') {
+      state.fullSimulation = simulationViewFromDecision(result.decision, state.fullSimulation);
       state.decisionToken = result.confirmationToken;
       state.decisionEnvelope = {
         data: { decision: result.decision, confirmationToken: result.confirmationToken },
@@ -970,6 +1015,8 @@ function resetWorkspaceView(symbol) {
   });
   setText('#decision-result', '');
   setText('#decision-status', 'Run a successful simulation to choose a trader decision.');
+  const decisionQuantity = $('#decision-requested-quantity');
+  if (decisionQuantity) decisionQuantity.readOnly = false;
   const note = $('.exit-corridor-note');
   if (note) {
     note.innerHTML =
