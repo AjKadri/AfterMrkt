@@ -174,6 +174,9 @@ export type ProductContext = {
 };
 
 export type ProductWorkspaceQuestion = WorkspaceQuestionResult & {
+  marketObservedAt: string | null;
+  marketFreshness: Freshness;
+  sourceObservationTimes: Array<Pick<ProductSourceReference, 'sourceId' | 'observedAt'>>;
   supportingFacts: WorkspaceGroundingFact[];
   sources: ProductSourceReference[];
 };

@@ -1483,8 +1483,15 @@ async function sendAssistantQuery(
       ? []
       : [toProductSourceReference(decision.bookSource)]),
   ]);
+  const marketSource = snapshot?.source ?? context.market.sourceRef;
+  const marketObservedAt =
+    marketSource === null ? null : toProductSourceReference(marketSource).observedAt;
+  const marketFreshness = contextFreshness(context);
   const data: ProductWorkspaceQuestion = {
     ...assistantResult.result,
+    marketObservedAt,
+    marketFreshness,
+    sourceObservationTimes: sources.map(({ sourceId, observedAt }) => ({ sourceId, observedAt })),
     supportingFacts: assistantResult.facts.filter((fact) =>
       assistantResult.result.supportingFactIds.includes(fact.id),
     ),
@@ -1492,8 +1499,8 @@ async function sendAssistantQuery(
   };
   sendEnvelope(response, {
     mode: 'LIVE',
-    asOf: assistantResult.result.contextTimestamp,
-    freshness: contextFreshness(context),
+    asOf: marketObservedAt ?? processedAt,
+    freshness: marketFreshness,
     data,
     sourceRefs: sources,
     warnings: [

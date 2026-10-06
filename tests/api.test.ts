@@ -400,6 +400,10 @@ describe('AfterMrkt API contracts', () => {
           supportingFactIds: string[];
           supportingFacts: Array<{ id: string; value: string | null }>;
           contextTimestamp: string;
+          processedAt: string;
+          marketObservedAt: string | null;
+          marketFreshness: { state: string };
+          sourceObservationTimes: Array<{ sourceId: string; observedAt: string }>;
           inputHash: string;
           sources: unknown[];
         };
@@ -409,6 +413,15 @@ describe('AfterMrkt API contracts', () => {
         status: 'insufficient_evidence',
         supportingFactIds: ['event_status'],
         contextTimestamp: NOW.toISOString(),
+        processedAt: NOW.toISOString(),
+        marketObservedAt: '2026-09-29T21:59:59.000Z',
+        marketFreshness: { state: 'fresh' },
+        sourceObservationTimes: [
+          {
+            sourceId: 'bitget_generic_spot_orderbook',
+            observedAt: '2026-09-29T21:59:59.000Z',
+          },
+        ],
         inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       });
       expect(body.data.answer).not.toMatch(/\d/);

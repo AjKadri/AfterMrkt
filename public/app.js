@@ -164,7 +164,7 @@ function renderAssistantAnswer(answer) {
   }
   setText(
     '#assistant-provenance',
-    `Qwen · ${answer.model} · context ${formatTime(answer.contextTimestamp)} · input ${answer.inputHash}`,
+    `Qwen · ${answer.model} · processed ${formatTime(answer.processedAt)} · market observed ${formatTime(answer.marketObservedAt)} · freshness ${answer.marketFreshness?.state ?? 'unavailable'} · source observed ${formatTime(answer.sourceObservationTimes?.[0]?.observedAt)} · input ${answer.inputHash}`,
   );
 }
 

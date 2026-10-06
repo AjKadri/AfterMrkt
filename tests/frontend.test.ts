@@ -186,6 +186,11 @@ describe('integrated AfterMrkt frontend', () => {
     expect(client).toContain('The local AfterMrkt server is not reachable.');
     expect(app).toContain('Qwen analysis · not applicable');
     expect(app).toContain('Qwen analysis · unavailable (no validated result)');
+    expect(app).toContain('processed ${formatTime(answer.processedAt)}');
+    expect(app).toContain('market observed ${formatTime(answer.marketObservedAt)}');
+    expect(app).toContain(
+      'source observed ${formatTime(answer.sourceObservationTimes?.[0]?.observedAt)}',
+    );
     expect(app).toContain('Qwen was not run because no qualifying source event was available');
     expect(app).toContain('no average sale price is available because');
     expect(app).toContain('the captured order book had no executable two-sided market');

@@ -9,6 +9,7 @@ import { loadLocalEnv } from '../src/lib/env.js';
 loadLocalEnv();
 
 const port = Number(process.env.PORT ?? 3000);
+const host = process.env.AFTERMRKT_HOST ?? '0.0.0.0';
 const dataDirectory = process.env.AFTERMRKT_DATA_DIR ?? join(process.cwd(), '.agent', 'data');
 const eventReplayDataDirectory = process.env.AFTERMRKT_EVENT_REPLAY_DATA_DIR;
 const server = createApiServer({
@@ -21,6 +22,6 @@ const server = createApiServer({
     : { eventReplayStore: new FileCaptureStore(eventReplayDataDirectory) }),
 });
 
-server.listen(port, '127.0.0.1', () => {
-  console.log(`AfterMrkt API listening on http://127.0.0.1:${port}`);
+server.listen(port, host, () => {
+  console.log(`AfterMrkt API listening on http://${host}:${port}`);
 });
