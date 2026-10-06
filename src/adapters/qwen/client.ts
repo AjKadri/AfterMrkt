@@ -488,7 +488,7 @@ export function parseQwenDecisionStressTest(content: string): QwenDecisionStress
       'decision stress test contained a trading recommendation',
     );
   }
-  if (/(?:^|\s)\d+(?:\.\d+)?(?:\s*(?:%|bps|basis points?))?(?=\s|$|[,.])/iu.test(text)) {
+  if (/\p{N}/u.test(text)) {
     throw new ProbeError(
       'malformed_provider_data',
       'decision stress test contained an ungrounded numeric claim',

@@ -232,20 +232,31 @@ describe('Qwen decision stress contract', () => {
     ).toThrow(/recommendation/);
   });
 
-  it('rejects numeric prose so financial values stay deterministic', () => {
-    expect(() =>
-      parseQwenDecisionStressTest(
-        JSON.stringify({
-          immediateExit: 'The captured book could fill 50% of the quantity.',
-          evidence: 'The deterministic simulation is the evidence.',
-          mainUncertainty: 'The next book is unknown.',
-          considerations: ['Review the supplied facts.'],
-          model: 'qwen3.8-max',
-          promptVersion: QWEN_DECISION_STRESS_PROMPT_VERSION,
-        }),
-      ),
-    ).toThrow(/numeric claim/);
-  });
+  it.each([
+    ['50%', 'immediateExit'],
+    ['$100', 'evidence'],
+    ['(50%)', 'mainUncertainty'],
+    ['~50%', 'considerations'],
+    ['+3.5%', 'evidence'],
+    ['-12 bps', 'immediateExit'],
+  ] as const)(
+    'rejects numeric literal %s in %s so financial values stay deterministic',
+    (numericLiteral, field) => {
+      const payload: Record<string, unknown> = {
+        immediateExit: 'The captured book contains a trade-off.',
+        evidence: 'The deterministic simulation is the evidence.',
+        mainUncertainty: 'The next book is unknown.',
+        considerations: ['Review the supplied facts.'],
+        model: 'qwen3.8-max',
+        promptVersion: QWEN_DECISION_STRESS_PROMPT_VERSION,
+      };
+      payload[field] =
+        field === 'considerations'
+          ? [`The captured book contains ${numericLiteral}.`]
+          : `The captured book contains ${numericLiteral}.`;
+      expect(() => parseQwenDecisionStressTest(JSON.stringify(payload))).toThrow(/numeric claim/);
+    },
+  );
 
   it('rejects model provenance that does not match the configured client', async () => {
     const result = await runDecisionStressTest(

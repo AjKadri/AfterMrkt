@@ -238,4 +238,110 @@ describe('integrated AfterMrkt frontend', () => {
       'decision?.decisionStressTest ?? state.fullSimulation?.decisionStressTest',
     );
   });
+
+  it('keeps the original full position when a refreshed partial decision is reconsidered', async () => {
+    const app = await readPublicFile('app.js');
+    const scaleQuantitySource = app.match(
+      /function scaleQuantity\(value, fraction\) \{[\s\S]*?(?=\n\nfunction renderSimulation)/,
+    )?.[0];
+    const decisionQuantitySource = app.match(
+      /function decisionQuantityFor\(kind, totalQuantity\) \{[\s\S]*?(?=\n\nfunction renderDecisionRecord)/,
+    )?.[0];
+    const simulationViewSource = app.match(
+      /function simulationViewFromDecision\(decision, previousSimulation\) \{[\s\S]*?(?=\n\nasync function ensureManualPosition)/,
+    )?.[0];
+    const ensurePositionSource = app.match(
+      /async function ensureManualPosition\(fullPositionSimulation\) \{[\s\S]*?(?=\n\nasync function reviewTraderDecision)/,
+    )?.[0];
+    expect(decisionQuantitySource).toBeDefined();
+    expect(simulationViewSource).toBeDefined();
+    expect(ensurePositionSource).toBeDefined();
+
+    const context = createContext({
+      state: {
+        symbol: 'RNVDAUSDT',
+        position: null,
+        fullPositionSimulation: { requestedQuantity: '25' },
+        decisionSimulation: null,
+      },
+      afterMrktApi: {
+        createManualPosition: async (symbol: string, quantity: string) => ({
+          data: { position: { providerSymbol: symbol, quantity } },
+        }),
+      },
+    });
+    new Script(
+      `${scaleQuantitySource}\n${decisionQuantitySource}\n${simulationViewSource}\n${ensurePositionSource}\nthis.decisionQuantityFor = decisionQuantityFor; this.simulationViewFromDecision = simulationViewFromDecision; this.ensureManualPosition = ensureManualPosition;`,
+    ).runInContext(context);
+    const runtime = context as unknown as {
+      state: {
+        fullPositionSimulation: { requestedQuantity: string };
+        decisionSimulation: Record<string, string> | null;
+      };
+      decisionQuantityFor: (kind: string, totalQuantity: string) => string | null;
+      simulationViewFromDecision: (
+        decision: Record<string, unknown>,
+        previousSimulation: Record<string, unknown> | null,
+      ) => Record<string, unknown>;
+      ensureManualPosition: (simulation: { requestedQuantity: string }) => Promise<{
+        providerSymbol: string;
+        quantity: string;
+      }>;
+    };
+    runtime.state.decisionSimulation = runtime.simulationViewFromDecision(
+      {
+        providerSymbol: 'RNVDAUSDT',
+        currentPrice: '100',
+        simulation: {
+          snapshotId: 'refreshed-book',
+          requestedQuantity: '12.5',
+          filledQuantity: '12.5',
+          unfilledQuantity: '0',
+          bestBid: '99',
+          midpoint: '99.5',
+          estimatedVWAP: '99',
+          totalExpectedProceeds: '1237.5',
+          absoluteSpread: '1',
+          spreadBps: '100',
+          slippageVersusMidpointBps: '50',
+          slippageVersusBestBidBps: '0',
+          levelsConsumed: 1,
+          quantityExecutableWithin25Bps: '8',
+          quantityExecutableWithin50Bps: '12.5',
+          positionPercentageWithin25Bps: '0.64',
+          positionPercentageWithin50Bps: '1',
+          condition: { label: 'execution-normal' },
+          reasons: [],
+          snapshotTimestamp: '2026-10-06T12:00:00.000Z',
+          receivedTimestamp: '2026-10-06T12:00:00.000Z',
+          freshness: { state: 'fresh' },
+        },
+      },
+      runtime.state.fullPositionSimulation,
+    ) as Record<string, string>;
+
+    expect(runtime.state.decisionSimulation.requestedQuantity).toBe('12.5');
+    expect(runtime.state.decisionSimulation.fillRatioWithin25Bps).toBe('0.64');
+    expect(runtime.state.fullPositionSimulation.requestedQuantity).toBe('25');
+    expect(
+      runtime.decisionQuantityFor(
+        'full_exit',
+        runtime.state.fullPositionSimulation.requestedQuantity,
+      ),
+    ).toBe('25');
+    expect(
+      runtime.decisionQuantityFor(
+        'partial_exit',
+        runtime.state.fullPositionSimulation.requestedQuantity,
+      ),
+    ).toBe('12.5');
+    await expect(
+      runtime.ensureManualPosition(runtime.state.fullPositionSimulation),
+    ).resolves.toEqual({
+      providerSymbol: 'RNVDAUSDT',
+      quantity: '25',
+    });
+    expect(app).toContain('state.decisionSimulation = simulationViewFromDecision');
+    expect(app).toContain('ensureManualPosition(fullPositionSimulation)');
+  });
 });

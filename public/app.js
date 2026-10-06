@@ -8,7 +8,8 @@ const state = {
   context: null,
   eventData: null,
   simulations: null,
-  fullSimulation: null,
+  fullPositionSimulation: null,
+  decisionSimulation: null,
   position: null,
   pendingDecision: null,
   decisionEnvelope: null,
@@ -455,16 +456,18 @@ function bindWorkspaceActions() {
   $$('.decision-choice').forEach((button) => {
     button.addEventListener('click', () => {
       const kind = button.dataset.decision;
-      if (!kind || !state.fullSimulation) return;
+      if (!kind || !state.fullPositionSimulation) return;
       state.pendingDecision = kind;
       state.decisionEnvelope = null;
       state.decisionToken = null;
+      state.decisionSimulation = null;
       $$('.decision-choice').forEach((item) =>
         item.classList.toggle('is-selected', item === button),
       );
       const review = $('#decision-review');
       if (review) review.hidden = false;
-      const totalQuantity = state.fullSimulation.requestedQuantity;
+      const fullPositionSimulation = state.fullPositionSimulation;
+      const totalQuantity = fullPositionSimulation.requestedQuantity;
       const quantity = $('#decision-requested-quantity');
       if (quantity) quantity.value = decisionQuantityFor(kind, totalQuantity);
       setText(
@@ -480,19 +483,19 @@ function bindWorkspaceActions() {
           providerSymbol: state.symbol,
           requestedQuantity: quantity?.value ?? totalQuantity,
           exitPercentage: kind === 'hold' ? '0' : kind === 'full_exit' ? '1' : '0.5',
-          currentPrice: state.fullSimulation.currentPrice,
+          currentPrice: fullPositionSimulation.currentPrice,
           environment: 'SIMULATED',
           executionStatus: 'awaiting_confirmation',
           simulation: {
-            ...state.fullSimulation,
-            estimatedVWAP: state.fullSimulation.estimatedVwap,
-            totalExpectedProceeds: state.fullSimulation.estimatedProceeds,
-            slippageVersusMidpointBps: state.fullSimulation.slippageBps,
-            positionPercentageWithin50Bps: state.fullSimulation.fillRatioWithin50Bps,
-            condition: { label: state.fullSimulation.condition },
-            snapshotTimestamp: state.fullSimulation.bookAsOf,
+            ...fullPositionSimulation,
+            estimatedVWAP: fullPositionSimulation.estimatedVwap,
+            totalExpectedProceeds: fullPositionSimulation.estimatedProceeds,
+            slippageVersusMidpointBps: fullPositionSimulation.slippageBps,
+            positionPercentageWithin50Bps: fullPositionSimulation.fillRatioWithin50Bps,
+            condition: { label: fullPositionSimulation.condition },
+            snapshotTimestamp: fullPositionSimulation.bookAsOf,
           },
-          decisionStressTest: state.fullSimulation.decisionStressTest,
+          decisionStressTest: fullPositionSimulation.decisionStressTest,
         },
         { awaitingReview: true },
       );
@@ -504,6 +507,7 @@ function bindWorkspaceActions() {
     state.pendingDecision = null;
     state.decisionEnvelope = null;
     state.decisionToken = null;
+    state.decisionSimulation = null;
     const review = $('#decision-review');
     if (review) review.hidden = true;
     $$('.decision-choice').forEach((item) => item.classList.remove('is-selected'));
@@ -555,7 +559,8 @@ function scaleQuantity(value, fraction) {
 function renderSimulation(simulations) {
   const [quarter, threeQuarter, full] = simulations;
   state.simulations = simulations;
-  state.fullSimulation = full ?? null;
+  state.fullPositionSimulation = full ?? null;
+  state.decisionSimulation = null;
   const rows = [
     ['25', quarter],
     ['75', threeQuarter],
@@ -772,7 +777,7 @@ function simulationViewFromDecision(decision, previousSimulation) {
     levelsConsumed: simulation.levelsConsumed,
     executableWithin25Bps: simulation.quantityExecutableWithin25Bps,
     executableWithin50Bps: simulation.quantityExecutableWithin50Bps,
-    fillRatioWithin25Bps: simulation.quantityExecutableWithin25Bps,
+    fillRatioWithin25Bps: simulation.positionPercentageWithin25Bps,
     fillRatioWithin50Bps: simulation.positionPercentageWithin50Bps,
     condition: simulation.condition.label,
     reasons: simulation.reasons,
@@ -783,7 +788,8 @@ function simulationViewFromDecision(decision, previousSimulation) {
   };
 }
 
-async function ensureManualPosition(quantity) {
+async function ensureManualPosition(fullPositionSimulation) {
+  const quantity = fullPositionSimulation.requestedQuantity;
   if (state.position?.providerSymbol === state.symbol && state.position.quantity === quantity) {
     return state.position;
   }
@@ -793,16 +799,16 @@ async function ensureManualPosition(quantity) {
 }
 
 async function reviewTraderDecision() {
-  const simulation = state.fullSimulation;
+  const fullPositionSimulation = state.fullPositionSimulation;
   const kind = state.pendingDecision;
-  if (!simulation || !kind) {
+  if (!fullPositionSimulation || !kind) {
     setText(
       '#decision-status',
       'Run a successful simulation, then choose Hold, partial exit, or full exit.',
     );
     return;
   }
-  const totalQuantity = simulation.requestedQuantity;
+  const totalQuantity = fullPositionSimulation.requestedQuantity;
   const quantityInput = $('#decision-requested-quantity');
   const requestedQuantity = quantityInput?.value.trim() ?? totalQuantity;
   if (!/^\d+(?:\.\d+)?$/.test(requestedQuantity) || Number(requestedQuantity) <= 0) {
@@ -816,7 +822,7 @@ async function reviewTraderDecision() {
     reviewButton.textContent = 'Preparing review…';
   }
   try {
-    const position = await ensureManualPosition(totalQuantity);
+    const position = await ensureManualPosition(fullPositionSimulation);
     const orderType = $('#decision-order-type')?.value ?? 'market';
     const limitPrice = $('#decision-limit-price')?.value.trim() ?? '';
     const maxSlippage = $('#decision-max-slippage')?.value.trim() ?? '';
@@ -825,7 +831,7 @@ async function reviewTraderDecision() {
       symbol: state.symbol,
       decision: kind,
       requestedQuantity: kind === 'hold' ? totalQuantity : requestedQuantity,
-      simulationSnapshotId: simulation.bookSnapshotId,
+      simulationSnapshotId: fullPositionSimulation.bookSnapshotId,
       ...(kind === 'hold' ? {} : { orderType }),
       ...(kind === 'hold' || orderType !== 'limit' || !limitPrice ? {} : { limitPrice }),
       ...(kind === 'hold' || !maxSlippage ? {} : { maximumAcceptableSlippageBps: maxSlippage }),
@@ -853,7 +859,10 @@ async function confirmTraderDecision() {
     const response = await afterMrktApi.confirmDecision(decision.decisionId, state.decisionToken);
     const result = response.data.result;
     if (result.status === 'refresh_required') {
-      state.fullSimulation = simulationViewFromDecision(result.decision, state.fullSimulation);
+      state.decisionSimulation = simulationViewFromDecision(
+        result.decision,
+        state.decisionSimulation ?? state.fullPositionSimulation,
+      );
       state.decisionToken = result.confirmationToken;
       state.decisionEnvelope = {
         data: { decision: result.decision, confirmationToken: result.confirmationToken },
@@ -943,7 +952,8 @@ async function loadWorkspace(symbol) {
 
 function resetWorkspaceView(symbol) {
   state.simulations = null;
-  state.fullSimulation = null;
+  state.fullPositionSimulation = null;
+  state.decisionSimulation = null;
   state.position = null;
   state.pendingDecision = null;
   state.decisionEnvelope = null;
