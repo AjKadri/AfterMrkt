@@ -3,6 +3,7 @@ export type { FreshnessConfig } from './freshness.js';
 export {
   calculateMarketMetrics,
   DEFAULT_MARKET_QUALITY_CONFIG,
+  parseTakerFeeRate,
   resolveMarketQualityConfig,
   simulateExit,
 } from './market-quality.js';

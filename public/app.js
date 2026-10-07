@@ -71,6 +71,12 @@ function formatMoneyForSummary(value, fallback = '--') {
   return `$${numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function formatFeeRatePercent(rate) {
+  const numeric = Number(rate);
+  if (rate === null || rate === undefined || rate === '' || !Number.isFinite(numeric)) return null;
+  return `${Number((numeric * 100).toFixed(4))}%`;
+}
+
 function formatNumber(value, fallback = '--') {
   if (value === null || value === undefined || value === '') return fallback;
   const numeric = Number(value);
@@ -743,9 +749,20 @@ function renderExitExplanation(simulation) {
         ? `${unfilled} units would remain unfilled within the observed depth, which was limited to ${depthLimit.value} bid levels; liquidity beyond them is unknown.`
         : `${unfilled} units would remain without a matching bid in this snapshot.`
       : 'The captured bids could absorb the full requested amount.';
+  const feeAmount = Number(simulation.estimatedFee);
+  const netAmount = Number(simulation.netProceeds);
+  const feeRatePercent = formatFeeRatePercent(simulation.feeRate);
+  const feeSentence =
+    simulation.estimatedFee !== undefined &&
+    simulation.estimatedFee !== null &&
+    Number.isFinite(feeAmount) &&
+    Number.isFinite(netAmount) &&
+    feeAmount > 0
+      ? ` After an estimated taker fee of ${formatMoneyForSummary(simulation.estimatedFee)}${feeRatePercent ? ` (${feeRatePercent})` : ''}, net proceeds would be about ${formatMoneyForSummary(simulation.netProceeds)}.`
+      : '';
   explanation.append(
     document.createTextNode(
-      `For ${requested} units of ${simulation.symbol}, ${fillSentence} ${unfilledSentence} Only ${within50Text} of the requested amount could be sold within 0.50% of the midpoint. That is a simulated estimate, not a guaranteed fill.`,
+      `For ${requested} units of ${simulation.symbol}, ${fillSentence}${feeSentence} ${unfilledSentence} Only ${within50Text} of the requested amount could be sold within 0.50% of the midpoint. That is a simulated estimate, not a guaranteed fill.`,
     ),
   );
 }
@@ -813,6 +830,13 @@ function renderDecisionRecord(decision, { awaitingReview = false } = {}) {
   setText(
     '#decision-proceeds',
     formatMoney(simulation?.totalExpectedProceeds ?? simulation?.estimatedProceeds),
+  );
+  const feeRatePercent = formatFeeRatePercent(simulation?.takerFeeRate ?? simulation?.feeRate);
+  setText('#decision-fee-label', feeRatePercent ? `Taker fee (${feeRatePercent})` : 'Taker fee');
+  setText('#decision-fee', formatMoney(simulation?.estimatedFee));
+  setText(
+    '#decision-net-proceeds',
+    formatMoney(simulation?.netExpectedProceeds ?? simulation?.netProceeds),
   );
   setText(
     '#decision-slippage',
@@ -892,6 +916,9 @@ function simulationViewFromDecision(decision, previousSimulation) {
     midpoint: simulation.midpoint,
     estimatedVwap: simulation.estimatedVWAP,
     estimatedProceeds: simulation.totalExpectedProceeds,
+    feeRate: simulation.takerFeeRate,
+    estimatedFee: simulation.estimatedFee,
+    netProceeds: simulation.netExpectedProceeds,
     absoluteSpread: simulation.absoluteSpread,
     spreadBps: simulation.spreadBps,
     slippageBps: simulation.slippageVersusMidpointBps,

@@ -72,6 +72,7 @@ The defaults in `.env.example` are enough for public Bitget market data and loca
 - `AFTERMRKT_EVENT_REPLAY_DATA_DIR` points to an optional directory containing event replay records.
 - `QWEN_API_KEY` enables the separate workspace, decision stress-test, and event interpretation calls. Without it, Qwen is explicitly unavailable while deterministic context remains usable.
 - `AFTERMRKT_ASSISTANT_RATE_PER_MINUTE` (default `10`) limits Qwen-backed requests per client per minute, keyed by the first `x-forwarded-for` entry or the socket address. `AFTERMRKT_ASSISTANT_DAILY_CAP` (default `500`) is a global cap per UTC day. Requests over either limit receive HTTP 429.
+- `AFTERMRKT_TAKER_FEE_RATE` (default `0.0005`) is the taker fee rate applied to exit estimates. The default is the Bitget VIP 0 spot taker rate; change it for other fee tiers. It must be a decimal from 0 up to but below 1; invalid values fall back to the default.
 - `QWEN_BASE_URL`, `QWEN_MODEL`, timeout, output, and thinking settings configure the Qwen adapter. The hackathon defaults are `https://hackathon.bitgetops.com/v1` and `qwen3.8-max`.
 - `SEC_USER_AGENT` is required only for SEC EDGAR retrieval. It must include a real contact address when live SEC collection is used.
 - `BITGET_BASE_URL`, `BITGET_SYMBOL`, and `BITGET_SYMBOL_LIMIT` configure public-data probes. No Bitget account credentials are required for the public routes used by the workspace.

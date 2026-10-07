@@ -4,6 +4,7 @@ import {
   QWEN_WORKSPACE_QUESTION_PROMPT_VERSION,
 } from '../src/adapters/qwen/index.js';
 import type { QwenCall } from '../src/adapters/qwen/index.js';
+import { extractNumberTokens, formatFactForQwen } from '../src/lib/qwen-numbers.js';
 import { ProbeError } from '../src/lib/errors.js';
 import {
   runWorkspaceQuestion,
@@ -278,5 +279,121 @@ describe('contextual workspace Qwen contract', () => {
     expect(result.result.status).toBe('unavailable');
     expect(result.result.supportingFactIds).toEqual([]);
     expect(result.result.attemptCount).toBe(2);
+  });
+});
+
+describe('grounded numbers in workspace answers', () => {
+  it.each([
+    ['1.234567', 'price', '1.23'],
+    ['2.825', 'bps', '2.83 bps'],
+    ['-0.456', 'percent', '-0.46%'],
+    ['0.8', 'ratio', '80%'],
+    ['0.12345678', 'units', '0.1235'],
+    ['5.5000', 'units', '5.5'],
+    ['0.0000001', 'units', '0'],
+    ['1234567.891', 'quote', '1234567.89'],
+  ] as const)('formats %s as %s', (value, unit, expected) => {
+    expect(formatFactForQwen(value, unit)).toBe(expected);
+  });
+
+  it('normalises number tokens', () => {
+    expect(extractNumberTokens('1,000.50 and 2.0 and -3 and a-4 and 7.')).toEqual([
+      '1000.5',
+      '2',
+      '-3',
+      '4',
+      '7',
+    ]);
+  });
+
+  it('accepts only grounded numbers', () => {
+    const allowed = new Set(['2.82', '50']);
+    const parse = (answer: string, set?: Set<string>) =>
+      parseQwenWorkspaceQuestion(
+        JSON.stringify(validAnswer({ answer })),
+        set === undefined ? undefined : { allowedNumbers: set },
+      );
+    expect(() => parse('Slippage is 2.82 bps within 50 bps.', allowed)).not.toThrow();
+    expect(() => parse('Slippage is 3 bps.', allowed)).toThrow(/ungrounded numeric claim/);
+    expect(() => parse('Slippage is 2.8 bps.', allowed)).toThrow(/numeric claim/);
+    expect(() => parse('Slippage is 2.82 bps.')).toThrow(/numeric claim/);
+  });
+
+  function client(answers: string[], seen: Array<Record<string, unknown>> = []) {
+    let index = 0;
+    const result: WorkspaceQuestionClient = {
+      model: 'qwen3.8-max',
+      askWorkspaceQuestion: async (input) => {
+        seen.push(input as unknown as Record<string, unknown>);
+        const answer = answers[Math.min(index, answers.length - 1)] ?? '';
+        index += 1;
+        return response(validAnswer({ answer, supportingFactIds: ['spread'] }));
+      },
+    };
+    return result;
+  }
+  const base = {
+    providerSymbol: 'RMUUSDT',
+    context,
+    simulation: null,
+    decision: null,
+    processedAt: context.asOf,
+  };
+
+  it('passes a quoted fact figure, allows label and question numbers, and retries ungrounded ones', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const ok = await runWorkspaceQuestion(client(['The spread is 99.50 bps.'], seen), {
+      ...base,
+      question: 'How wide is it?',
+    });
+    expect(ok.result).toMatchObject({ status: 'answered', attemptCount: 1 });
+    const facts = (seen[0]?.facts ?? []) as Array<{ summary: string }>;
+    expect(facts.some((fact) => fact.summary === 'Spread: 99.50 bps')).toBe(true);
+
+    const label = await runWorkspaceQuestion(client(['Depth within 50 bps is 1000.00.']), {
+      ...base,
+      question: 'How deep is it?',
+    });
+    expect(label.result.status).toBe('answered');
+
+    const fromQuestion = await runWorkspaceQuestion(client(['I see your 30 units question.']), {
+      ...base,
+      question: 'What about 30 units?',
+    });
+    expect(fromQuestion.result.status).toBe('answered');
+
+    const retried = await runWorkspaceQuestion(
+      client(['The spread is 3 bps.', 'The spread is 99.50 bps.'], seen),
+      { ...base, question: 'How wide is it?' },
+    );
+    expect(retried.result).toMatchObject({ status: 'answered', attemptCount: 2 });
+    expect(String(seen.at(-1)?.retryInstruction)).toMatch(/not in the fact registry/);
+  });
+
+  it('no longer redacts digits in text facts', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    await runWorkspaceQuestion(client(['The spread is 99.50 bps.'], seen), {
+      ...base,
+      question: 'Limits?',
+      context: { ...context, limitations: ['Depth capped at 50 levels.'] } as AfterMrktContext,
+    });
+    const facts = (seen[0]?.facts ?? []) as Array<{ id: string; summary: string }>;
+    expect(facts.find((fact) => fact.id === 'known_limitations')?.summary).toBe(
+      'Known limitations: Depth capped at 50 levels.',
+    );
+  });
+});
+
+describe('number grounding edge cases', () => {
+  it('keeps a small fee rate exact instead of rounding it up', async () => {
+    const { formatFactForQwen } = await import('../src/lib/qwen-numbers.js');
+    expect(formatFactForQwen('0.0005', 'ratio')).toBe('0.05%');
+    expect(formatFactForQwen('1', 'ratio')).toBe('100%');
+  });
+
+  it('treats digits outside ASCII as ungrounded', async () => {
+    const { findUngroundedNumbers } = await import('../src/lib/qwen-numbers.js');
+    expect(findUngroundedNumbers('about ٥ percent', new Set(['5']))).toEqual(['٥']);
+    expect(findUngroundedNumbers('spread is 1.67 bps', new Set(['1.67']))).toEqual([]);
   });
 });

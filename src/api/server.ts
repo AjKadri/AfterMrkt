@@ -31,6 +31,7 @@ import {
 import { EventReplayEngine, ReplayEngine, ReplayError } from '../domain/replay.js';
 import {
   calculateMarketMetrics,
+  parseTakerFeeRate,
   resolveMarketQualityConfig,
   simulateExit,
   type MarketQualityConfig,
@@ -49,6 +50,8 @@ import type { ExecutionStore } from '../domain/execution-store.js';
 import { InMemoryExecutionStore } from '../persistence/execution-store.js';
 import { QwenClient } from '../adapters/qwen/index.js';
 import {
+  formatStressPacketNumbers,
+  MAX_STRESS_LIMITATIONS,
   runDecisionStressTest,
   type DecisionStressTestClient,
 } from '../domain/decision-stress-test.js';
@@ -205,7 +208,14 @@ const INSTRUMENT_LIST_CACHE_TTL_MS = 5_000;
 const DEFAULT_INSTRUMENT_LIST_LIMIT = 12;
 const MAX_INSTRUMENT_LIST_LIMIT = 40;
 
-export function createApiServer(options: ApiServerOptions): Server {
+export function createApiServer(rawOptions: ApiServerOptions): Server {
+  const options: ApiServerOptions = {
+    ...rawOptions,
+    qualityConfig: {
+      takerFeeRate: parseTakerFeeRate(process.env.AFTERMRKT_TAKER_FEE_RATE),
+      ...rawOptions.qualityConfig,
+    },
+  };
   const snapshots = options.snapshots ?? createDefaultSnapshotStore();
   const replayEngine =
     options.replayEngine ??
@@ -1651,19 +1661,12 @@ async function generateDecisionStressTest(
   return runDecisionStressTest(qwen, {
     providerSymbol: simulation.providerSymbol,
     nativeTicker,
-    moveSinceNativeClosePercent: context?.move.percentageMove ?? null,
+    ...formatStressPacketNumbers(simulation, context?.move.percentageMove ?? null),
     sessionState: context?.session.status ?? 'unavailable',
     sourceEventStatus,
     sourceEventFacts,
-    spreadBps: simulation.spreadBps,
     freshnessState: simulation.freshness.state,
     liquidityCondition: simulation.condition.label,
-    requestedQuantity: simulation.requestedQuantity,
-    filledQuantity: simulation.filledQuantity,
-    unfilledQuantity: simulation.unfilledQuantity,
-    fillRatioWithin50Bps: simulation.positionPercentageWithin50Bps,
-    estimatedVwap: simulation.estimatedVWAP,
-    slippageBps: simulation.slippageVersusMidpointBps,
     nativePriceConfirmation: 'unavailable',
     limitations: [
       simulation.estimateDisclaimer,
@@ -1672,7 +1675,7 @@ async function generateDecisionStressTest(
       ...(simulation.freshness.state === 'fresh'
         ? []
         : ['The observed book is not fresh enough to treat as current execution context.']),
-    ],
+    ].slice(0, MAX_STRESS_LIMITATIONS),
     processedAt,
   });
 }
