@@ -7,6 +7,8 @@ import {
   QwenClient,
   parseQwenDecisionStressTest,
   parseQwenEvent,
+  parseQwenWorkspaceQuestion,
+  QWEN_WORKSPACE_QUESTION_PROMPT_VERSION,
 } from '../src/adapters/qwen/index.js';
 import type { QwenCall } from '../src/adapters/qwen/index.js';
 import { runDecisionStressTest } from '../src/domain/decision-stress-test.js';
@@ -375,5 +377,48 @@ describe('Qwen decision stress contract', () => {
       model: 'qwen3.8-max',
       providerReportedModel: null,
     });
+  });
+});
+
+describe('Qwen workspace answer filters', () => {
+  const workspaceAnswer = (answer: string) =>
+    JSON.stringify({
+      status: 'answered',
+      topic: 'exit',
+      answer,
+      supportingFactIds: ['exit_fill_ratio'],
+      uncertainties: [],
+      model: 'qwen3.8-max',
+      promptVersion: QWEN_WORKSPACE_QUESTION_PROMPT_VERSION,
+    });
+
+  it.each([
+    'You should probably sell.',
+    'Consider exiting before the open.',
+    'It would be wise to reduce exposure.',
+    'Selling the full position now looks like the prudent choice.',
+    'A partial exit is the better option here.',
+    'I would recommend a partial exit.',
+    'A full exit is not recommended while the book is stale.',
+  ])('rejects advice phrasing: %s', (sentence) => {
+    expect(() => parseQwenWorkspaceQuestion(workspaceAnswer(sentence))).toThrow(
+      /trading recommendation/,
+    );
+  });
+
+  it.each([
+    'A full exit would consume more of the observed book than a partial exit.',
+    'Holding keeps the position exposed to the reopening price.',
+    'AfterMrkt cannot recommend a trade or choose between these scenarios.',
+  ])('allows neutral description: %s', (sentence) => {
+    expect(parseQwenWorkspaceQuestion(workspaceAnswer(sentence)).answer).toBe(sentence);
+  });
+
+  it('rejects number words used as values', () => {
+    expect(() =>
+      parseQwenWorkspaceQuestion(
+        workspaceAnswer('Roughly five percent of the position would go unfilled.'),
+      ),
+    ).toThrow(/ungrounded numeric claim/);
   });
 });

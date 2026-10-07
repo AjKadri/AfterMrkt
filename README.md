@@ -2,6 +2,8 @@
 
 AfterMrkt is decision support for reading an off-hours Bitget rToken move and estimating what an existing position could absorb before the U.S. market reopens.
 
+Live demo: https://aftermrkt.ajkadri.dev/ (workspace at `/workspace`).
+
 ## The 30-second story
 
 The problem is simple: an after-hours price move leaves the trader asking what changed, why it moved, and what an exit would cost. AfterMrkt answers those questions with a bounded decision frame:
@@ -69,7 +71,8 @@ The defaults in `.env.example` are enough for public Bitget market data and loca
 - `AFTERMRKT_DATA_DIR` selects the persistent directory for captures, replay records, and manual decision records. It defaults to `.agent/data`.
 - `AFTERMRKT_EVENT_REPLAY_DATA_DIR` points to an optional directory containing event replay records.
 - `QWEN_API_KEY` enables the separate workspace, decision stress-test, and event interpretation calls. Without it, Qwen is explicitly unavailable while deterministic context remains usable.
-- `QWEN_BASE_URL`, `QWEN_MODEL`, timeout, output, thinking, and budget settings configure the Qwen adapter. The hackathon defaults are `https://hackathon.bitgetops.com/v1` and `qwen3.8-max`.
+- `AFTERMRKT_ASSISTANT_RATE_PER_MINUTE` (default `10`) limits Qwen-backed requests per client per minute, keyed by the first `x-forwarded-for` entry or the socket address. `AFTERMRKT_ASSISTANT_DAILY_CAP` (default `500`) is a global cap per UTC day. Requests over either limit receive HTTP 429.
+- `QWEN_BASE_URL`, `QWEN_MODEL`, timeout, output, and thinking settings configure the Qwen adapter. The hackathon defaults are `https://hackathon.bitgetops.com/v1` and `qwen3.8-max`.
 - `SEC_USER_AGENT` is required only for SEC EDGAR retrieval. It must include a real contact address when live SEC collection is used.
 - `BITGET_BASE_URL`, `BITGET_SYMBOL`, and `BITGET_SYMBOL_LIMIT` configure public-data probes. No Bitget account credentials are required for the public routes used by the workspace.
 - `MCP_ENDPOINT` and `MCP_NATIVE_TICKER` support native-price capability probes. Native confirmation remains unavailable in the product.
@@ -98,4 +101,4 @@ Probe evidence is written to the ignored `.agent/evidence/` directory. Public Bi
 
 ## Repository notes
 
-Read [AGENTS.md](AGENTS.md) and [.agent/TASK.md](.agent/TASK.md) before changing the project. The current phase keeps deterministic market data, evidence, replay, and simulation boundaries explicit. It does not enable wallets, live accounts, Demo Reality execution, live orders, or autonomous trading.
+Read [AGENTS.md](AGENTS.md) before changing the project. The current phase keeps deterministic market data, evidence, replay, and simulation boundaries explicit. It does not enable wallets, live accounts, Demo Reality execution, live orders, or autonomous trading.

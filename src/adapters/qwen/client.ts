@@ -562,6 +562,12 @@ export function parseQwenDecisionStressTest(content: string): QwenDecisionStress
   return parsed.data;
 }
 
+const NUMBER_WORD_VALUE_PATTERN =
+  /\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|half)(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?\s+(?:percent|per cent|basis points?|bps|dollars?|units?|shares?)\b/iu;
+
+const RECOMMENDATION_PATTERN =
+  /\b(?:you should|you (?:may|might|could) want to|consider (?:buying|selling|exiting|holding|reducing|trimming|closing)|(?:i|we)(?:'d| would| will| can)? (?:recommend|suggest|advise)|(?:is|are|be) (?:not )?(?:recommended|advised)|(?:my|our|the) recommendation is|(?:suggests?|advis(?:es|ed|ing)) (?:that )?(?:you|against|to)|advisable|it (?:would be|is) (?:wise|prudent|best|better) to|(?:better|best|prudent|wise|wiser|safest|smartest) (?:option|choice|move|course|decision)|(?:the )?best trade|execute now|place (?:the |an )?order|guaranteed|risk[- ]free)\b/iu;
+
 export function parseQwenWorkspaceQuestion(content: string): QwenWorkspaceQuestion {
   let value: unknown;
   try {
@@ -580,17 +586,13 @@ export function parseQwenWorkspaceQuestion(content: string): QwenWorkspaceQuesti
     );
   }
   const text = [parsed.data.answer, ...parsed.data.uncertainties].join(' ');
-  if (/\p{N}/u.test(text)) {
+  if (/\p{N}/u.test(text) || NUMBER_WORD_VALUE_PATTERN.test(text)) {
     throw new ProbeError(
       'malformed_provider_data',
       'workspace question answer contained an ungrounded numeric claim',
     );
   }
-  if (
-    /\b(?:you should\s+(?:buy|sell|choose|prefer|hold|exit|execute|place)|i recommend(?:ed|ation)?|(?:the )?best trade|execute now|place (?:the |an )?order|guaranteed|risk[- ]free)\b/iu.test(
-      text,
-    )
-  ) {
+  if (RECOMMENDATION_PATTERN.test(text)) {
     throw new ProbeError(
       'malformed_provider_data',
       'workspace question answer contained a trading recommendation',
