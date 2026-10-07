@@ -273,6 +273,11 @@ export function simulateExit(input: SimulationInput): ExitSimulation {
     simulatedSlippageBps: slippageVersusMidpoint,
     fillRatioWithin50Bps: bandQuantities.within50Bps.div(requested),
     unfilledQuantity: requested.minus(fullBookFill),
+    cappedBidLevels:
+      input.snapshot.requestedDepth > 0 &&
+      input.snapshot.returnedBidCount >= input.snapshot.requestedDepth
+        ? input.snapshot.returnedBidCount
+        : undefined,
     maximumAcceptableSlippageBps: input.maximumAcceptableSlippageBps,
   });
   return {
@@ -423,6 +428,7 @@ function classifyCondition(input: {
   simulatedSlippageBps: Decimal | null | undefined;
   fillRatioWithin50Bps?: Decimal;
   unfilledQuantity?: Decimal;
+  cappedBidLevels?: number | undefined;
   maximumAcceptableSlippageBps: string | undefined;
 }): ExecutionCondition {
   const reasons = [...input.baseReasons];
@@ -464,9 +470,21 @@ function classifyCondition(input: {
         'unfilledQuantity',
         input.unfilledQuantity.toFixed(),
         '0',
-        'requested quantity exceeds observed bid depth',
+        input.cappedBidLevels === undefined
+          ? 'requested quantity exceeds observed bid depth'
+          : 'requested quantity exceeds the bid levels observed in the capped book',
       ),
     );
+    if (input.cappedBidLevels !== undefined) {
+      reasons.push(
+        reason(
+          'observedDepthLimit',
+          String(input.cappedBidLevels),
+          String(input.cappedBidLevels),
+          `observed book was limited to ${input.cappedBidLevels} bid levels; liquidity beyond them is unknown`,
+        ),
+      );
+    }
   }
   if (input.simulatedSlippageBps && input.simulatedSlippageBps.gt(impairedThreshold)) {
     impaired = true;

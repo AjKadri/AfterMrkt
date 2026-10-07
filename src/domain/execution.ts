@@ -35,12 +35,15 @@ export const DEFAULT_EXECUTION_CONFIG = Object.freeze({
   intentTtlMs: 120_000,
   confirmationTtlMs: 120_000,
   balanceFreshMaxAgeMs: DEFAULT_FRESHNESS_CONFIG.freshMaxAgeMs,
+  // A paper decision is re-reviewed only when the refreshed estimate moves by more than this.
+  paperRefreshToleranceBps: '10',
 });
 
 export type ExecutionConfig = {
   intentTtlMs: number;
   confirmationTtlMs: number;
   balanceFreshMaxAgeMs: number;
+  paperRefreshToleranceBps: string;
 };
 
 export type CreateExecutionIntentInput = {
@@ -517,7 +520,14 @@ export class ExecutionService {
         decimal(decision.requestedQuantity, 'requestedQuantity'),
         freshBook,
       );
-      if (decision.simulation !== null && materiallyChanged(decision.simulation, freshSimulation)) {
+      if (
+        decision.simulation !== null &&
+        paperEstimateChanged(
+          decision.simulation,
+          freshSimulation,
+          this.config.paperRefreshToleranceBps,
+        )
+      ) {
         await this.confirmationForIntent(decision.intentId, confirmationToken);
         const refreshedIntent = await this.refreshIntent(
           intent,
@@ -1301,6 +1311,31 @@ function materiallyChanged(
     previous.unfilledQuantity !== current.unfilledQuantity ||
     previous.slippageVersusMidpointBps !== current.slippageVersusMidpointBps
   );
+}
+
+/**
+ * A live book ticks constantly, so exact equality would ask a paper decision to be
+ * re-reviewed on every confirmation. Refresh only when the outcome actually differs:
+ * the fill, the liquidity condition, or the average price beyond the tolerance.
+ */
+function paperEstimateChanged(
+  previous: ExecutionIntent['simulation'],
+  current: ExecutionIntent['simulation'],
+  toleranceBps: string,
+): boolean {
+  if (
+    previous.filledQuantity !== current.filledQuantity ||
+    previous.unfilledQuantity !== current.unfilledQuantity ||
+    previous.condition.label !== current.condition.label
+  ) {
+    return true;
+  }
+  const before = decimalOrNull(previous.estimatedVWAP);
+  const after = decimalOrNull(current.estimatedVWAP);
+  if (before === null || after === null || before.lte(0)) {
+    return previous.estimatedVWAP !== current.estimatedVWAP;
+  }
+  return after.minus(before).abs().div(before).times(10_000).gt(toleranceBps);
 }
 
 function parsePrecision(value: string | null): number | null {
