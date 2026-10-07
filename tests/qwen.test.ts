@@ -124,6 +124,48 @@ describe('Qwen event contract', () => {
     expect(client.thinkingMode).toBe('disabled');
   });
 
+  it('tells Qwen the exact model name to echo in the decision stress test', async () => {
+    const originalFetch = globalThis.fetch;
+    const requestBodies: Record<string, unknown>[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({ model: 'qwen3.8-max', choices: [{ message: { content: '{}' } }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+    try {
+      const client = new QwenClient({
+        apiKey: 'test-fixture-key',
+        baseUrl: 'https://example.test/v1',
+        model: 'qwen3.8-max',
+      });
+      await client.stressTestDecision({
+        providerSymbol: 'RMUUSDT',
+        nativeTicker: 'MU',
+        moveSinceNativeClosePercent: null,
+        sessionState: 'closed',
+        sourceEventStatus: 'not_applicable',
+        sourceEventFacts: [],
+        spreadBps: '1',
+        freshnessState: 'fresh',
+        liquidityCondition: 'execution-normal',
+        requestedQuantity: '5',
+        filledQuantity: '5',
+        unfilledQuantity: '0',
+        fillRatioWithin50Bps: '1',
+        estimatedVwap: '100',
+        slippageBps: '1',
+        nativePriceConfirmation: 'unavailable',
+        limitations: [],
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const messages = requestBodies[0]?.messages as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain('Set model to exactly qwen3.8-max.');
+  });
+
   it('sends an exact fact allow-list and bounded retry instruction for workspace questions', async () => {
     const originalFetch = globalThis.fetch;
     const requestBodies: Record<string, unknown>[] = [];
