@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { calculateMarketMetrics, simulateExit } from '../src/domain/market-quality.js';
+import {
+  calculateMarketMetrics,
+  parseTakerFeeRate,
+  simulateExit,
+} from '../src/domain/market-quality.js';
 import { testSnapshot } from './fixtures/market.js';
 
 const NOW = new Date('2026-09-29T22:00:00.000Z');
@@ -19,6 +23,54 @@ describe('deterministic market-quality engine', () => {
     expect(result.totalExpectedProceeds).toBe('500');
     expect(result.levelsConsumed).toBe(1);
     expect(result.condition.label).toBe('execution-normal');
+  });
+
+  it('computes the taker fee and net proceeds with Decimal maths', () => {
+    const result = simulateExit({
+      providerSymbol: 'RMUUSDT',
+      requestedQuantity: '4',
+      snapshot: testSnapshot({
+        bids: [
+          { price: '100', quantity: '2' },
+          { price: '99', quantity: '3' },
+        ],
+      }),
+      now: NOW,
+    });
+    expect(result.totalExpectedProceeds).toBe('398');
+    expect(result.takerFeeRate).toBe('0.0005');
+    expect(result.estimatedFee).toBe('0.199');
+    expect(result.netExpectedProceeds).toBe('397.801');
+  });
+
+  it('honours a custom taker fee rate and reports zero fee when unavailable', () => {
+    const custom = simulateExit({
+      providerSymbol: 'RMUUSDT',
+      requestedQuantity: '5',
+      snapshot: testSnapshot(),
+      now: NOW,
+      config: { takerFeeRate: '0.001' },
+    });
+    expect(custom.estimatedFee).toBe('0.5');
+    expect(custom.netExpectedProceeds).toBe('499.5');
+    const unavailable = simulateExit({
+      providerSymbol: 'RMUUSDT',
+      requestedQuantity: '0',
+      snapshot: testSnapshot(),
+      now: NOW,
+    });
+    expect(unavailable).toMatchObject({
+      takerFeeRate: '0.0005',
+      estimatedFee: '0',
+      netExpectedProceeds: '0',
+    });
+  });
+
+  it('parses the env taker fee rate and falls back on invalid values', () => {
+    expect(parseTakerFeeRate('0.001')).toBe('0.001');
+    expect(parseTakerFeeRate('0')).toBe('0');
+    for (const bad of [undefined, '', '1', '-0.1', 'abc', '1e-3'])
+      expect(parseTakerFeeRate(bad)).toBe('0.0005');
   });
 
   it('walks several bid levels in descending price order', () => {
