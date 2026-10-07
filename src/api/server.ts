@@ -87,6 +87,7 @@ export type ApiServerOptions = {
   executionStore?: ExecutionStore;
   executionService?: ExecutionService;
   now?: () => Date;
+  assistantRateLimit?: { perMinute?: number; dailyCap?: number };
   qualityConfig?: Partial<MarketQualityConfig>;
 };
 
@@ -110,7 +111,93 @@ type InstrumentListCacheEntry = {
 type ApiRuntime = {
   contextCache: Map<string, ContextCacheEntry>;
   instrumentListCache: InstrumentListCacheEntry | null;
+  qwenLimiter: QwenRateLimiter;
 };
+
+const RATE_WINDOW_MS = 60_000;
+const MAX_TRACKED_CLIENTS = 5_000;
+const DEFAULT_RATE_PER_MINUTE = 10;
+const DEFAULT_DAILY_CAP = 500;
+
+class QwenRateLimiter {
+  private readonly clients = new Map<string, number[]>();
+  private day = '';
+  private dailyCount = 0;
+
+  constructor(
+    private readonly perMinute: number,
+    private readonly dailyCap: number,
+  ) {}
+
+  /** Returns null when allowed (and records the request), otherwise the retry delay in seconds. */
+  check(clientKey: string, nowMs: number): number | null {
+    const day = new Date(nowMs).toISOString().slice(0, 10);
+    if (day !== this.day) {
+      this.day = day;
+      this.dailyCount = 0;
+    }
+    this.prune(nowMs);
+    const recent = (this.clients.get(clientKey) ?? []).filter((at) => nowMs - at < RATE_WINDOW_MS);
+    if (recent.length >= this.perMinute) {
+      const oldest = recent[0] ?? nowMs;
+      return Math.max(1, Math.ceil((oldest + RATE_WINDOW_MS - nowMs) / 1000));
+    }
+    if (this.dailyCount >= this.dailyCap) {
+      const nextDay = Date.parse(`${day}T00:00:00.000Z`) + 86_400_000;
+      return Math.max(1, Math.ceil((nextDay - nowMs) / 1000));
+    }
+    recent.push(nowMs);
+    this.clients.delete(clientKey);
+    this.clients.set(clientKey, recent);
+    this.dailyCount += 1;
+    return null;
+  }
+
+  private prune(nowMs: number): void {
+    for (const [key, times] of this.clients) {
+      if (nowMs - (times.at(-1) ?? 0) >= RATE_WINDOW_MS) this.clients.delete(key);
+    }
+    while (this.clients.size >= MAX_TRACKED_CLIENTS) {
+      const oldest = this.clients.keys().next().value;
+      if (oldest === undefined) break;
+      this.clients.delete(oldest);
+    }
+  }
+}
+
+function positiveIntegerEnv(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function clientKeyFor(request: IncomingMessage): string {
+  const forwarded = request.headers['x-forwarded-for'];
+  const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim();
+  return first || request.socket.remoteAddress || 'unknown';
+}
+
+/** Sends a 429 and returns false when the Qwen-backed request exceeds its limit. */
+function allowQwenRequest(
+  response: ServerResponse,
+  request: IncomingMessage,
+  runtime: ApiRuntime,
+  now: () => Date,
+): boolean {
+  const retryAfter = runtime.qwenLimiter.check(clientKeyFor(request), now().getTime());
+  if (retryAfter === null) return true;
+  response.setHeader('retry-after', String(retryAfter));
+  sendError(
+    response,
+    now(),
+    'RATE_LIMITED',
+    'too many assistant requests; try again later',
+    429,
+    [],
+    'LIVE',
+    { retryAfterSeconds: retryAfter },
+  );
+  return false;
+}
 
 const MAX_BODY_BYTES = 128 * 1024;
 const CONTEXT_CACHE_TTL_MS = 5_000;
@@ -148,6 +235,15 @@ export function createApiServer(options: ApiServerOptions): Server {
   const runtime: ApiRuntime = {
     contextCache: new Map(),
     instrumentListCache: null,
+    qwenLimiter: new QwenRateLimiter(
+      options.assistantRateLimit?.perMinute ??
+        positiveIntegerEnv(
+          process.env.AFTERMRKT_ASSISTANT_RATE_PER_MINUTE,
+          DEFAULT_RATE_PER_MINUTE,
+        ),
+      options.assistantRateLimit?.dailyCap ??
+        positiveIntegerEnv(process.env.AFTERMRKT_ASSISTANT_DAILY_CAP, DEFAULT_DAILY_CAP),
+    ),
   };
 
   return createServer((request, response) => {
@@ -215,11 +311,13 @@ async function handleRequest(
   }
 
   if (method === 'POST' && parsedUrl.pathname === '/api/execution/decisions') {
+    if (!allowQwenRequest(response, request, runtime, now)) return;
     await sendTraderDecision(response, request, execution, options, qwen, now);
     return;
   }
 
   if (method === 'POST' && parsedUrl.pathname === '/api/assistant/query') {
+    if (!allowQwenRequest(response, request, runtime, now)) return;
     await sendAssistantQuery(response, request, options, snapshots, executionStore, assistant, now);
     return;
   }
@@ -380,7 +478,7 @@ async function handleRequest(
   }
 
   if (method === 'POST' && parsedUrl.pathname === '/api/execution/simulations') {
-    await sendSimulation(response, request, options, snapshots, qwen, now);
+    await sendSimulation(response, request, options, snapshots, qwen, now, runtime);
     return;
   }
 
@@ -1259,6 +1357,7 @@ async function sendSimulation(
   snapshots: MarketSnapshotStore,
   qwen: DecisionStressTestClient,
   now: () => Date,
+  runtime: ApiRuntime,
 ): Promise<void> {
   let payload: unknown;
   try {
@@ -1273,6 +1372,9 @@ async function sendSimulation(
     return;
   }
   const input: ExecutionSimulationRequest = parsed.data;
+  if (input.includeDecisionStressTest && !allowQwenRequest(response, request, runtime, now)) {
+    return;
+  }
   if (!isPositiveDecimal(input.requestedQuantity)) {
     sendError(
       response,

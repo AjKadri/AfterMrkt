@@ -207,14 +207,44 @@ describe('contextual workspace Qwen contract', () => {
     expect(providerCalls).toBe(1);
   });
 
-  it('answers out-of-scope questions without invoking Qwen', async () => {
-    let calls = 0;
+  it.each([
+    'What are the limitations?',
+    'Why has it moved so much?',
+    'Why is NVDA down tonight?',
+    'Write a poem about rain.',
+  ])('sends every question to the client: %s', async (question) => {
+    const questions: string[] = [];
     const client: WorkspaceQuestionClient = {
       model: 'qwen3.8-max',
-      askWorkspaceQuestion: async () => {
-        calls += 1;
+      askWorkspaceQuestion: async (input) => {
+        questions.push(input.question);
         return response(validAnswer());
       },
+    };
+    await runWorkspaceQuestion(client, {
+      providerSymbol: 'RMUUSDT',
+      question,
+      context,
+      simulation: null,
+      decision: null,
+      processedAt: context.asOf,
+    });
+    expect(questions).toEqual([question]);
+  });
+
+  it('passes through an out_of_scope status returned by the client', async () => {
+    const client: WorkspaceQuestionClient = {
+      model: 'qwen3.8-max',
+      askWorkspaceQuestion: async () =>
+        response(
+          validAnswer({
+            status: 'out_of_scope',
+            topic: 'general_context',
+            answer: 'That is outside this instrument context.',
+            supportingFactIds: [],
+            uncertainties: [],
+          }),
+        ),
     };
     const result = await runWorkspaceQuestion(client, {
       providerSymbol: 'RMUUSDT',
@@ -225,7 +255,6 @@ describe('contextual workspace Qwen contract', () => {
       processedAt: context.asOf,
     });
     expect(result.result.status).toBe('out_of_scope');
-    expect(calls).toBe(0);
   });
 
   it('quarantines prompt-injection output instead of treating it as research', async () => {

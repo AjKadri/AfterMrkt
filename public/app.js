@@ -736,9 +736,12 @@ function renderExitExplanation(simulation) {
   const fillSentence = simulation.estimatedVwap
     ? `the visible buyers could buy about ${filled} units at an estimated average of ${formatMoneyForSummary(simulation.estimatedVwap)}.`
     : `the visible buyers could buy about ${filled} units, but no average sale price is available because ${noFillReason}.`;
+  const depthLimit = simulation.reasons?.find((item) => item.metric === 'observedDepthLimit');
   const unfilledSentence =
     Number.isFinite(unfilledAmount) && unfilledAmount > 0
-      ? `${unfilled} units would remain without a matching bid in this snapshot.`
+      ? depthLimit
+        ? `${unfilled} units would remain unfilled within the observed depth, which was limited to ${depthLimit.value} bid levels; liquidity beyond them is unknown.`
+        : `${unfilled} units would remain without a matching bid in this snapshot.`
       : 'The captured bids could absorb the full requested amount.';
   explanation.append(
     document.createTextNode(
