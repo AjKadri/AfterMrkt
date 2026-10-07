@@ -994,6 +994,7 @@ async function confirmTraderDecision() {
         '#decision-status',
         'The book changed before confirmation. Review the refreshed deterministic values and confirm again.',
       );
+      setText('#decision-result', 'NOT RECORDED YET · PRICES MOVED · REVIEW AND CONFIRM AGAIN');
       return;
     }
     state.decisionEnvelope = { data: { decision: result.decision } };

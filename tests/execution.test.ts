@@ -162,12 +162,44 @@ describe('deterministic position and confirmation workflow', () => {
     });
   });
 
+  it('records a paper decision when the book only ticks before confirmation', async () => {
+    const demo = new FakeDemo([]);
+    const provider = marketProvider([
+      testSnapshot(),
+      testSnapshot({ bids: [{ price: '100.01', quantity: '10' }] }),
+    ]);
+    const service = createService(provider, demo);
+    const position = await service.createManualPosition({
+      providerSymbol: 'RMUUSDT',
+      quantity: '5',
+    });
+    const prepared = await service.prepareTraderDecision({
+      positionId: position.positionId,
+      providerSymbol: 'RMUUSDT',
+      decision: 'partial_exit',
+      requestedQuantity: '2.5',
+      orderType: 'market',
+    });
+    const created = await service.saveTraderDecision({
+      prepared,
+      decisionStressTest: null,
+      currentPrice: '100.5',
+    });
+    const confirmed = await service.confirmTraderDecision(
+      created.decision.decisionId,
+      created.confirmationToken,
+    );
+    expect(confirmed.status).toBe('confirmed');
+    expect(confirmed.decision.executionStatus).toBe('execution_unavailable');
+    expect(confirmed.decision.simulation?.estimatedVWAP).toBe('100');
+  });
+
   it('revalidates a manual exit decision before recording confirmation', async () => {
     const demo = new FakeDemo([]);
     const provider = marketProvider([
       testSnapshot(),
-      testSnapshot({ bids: [{ price: '99.99', quantity: '10' }] }),
-      testSnapshot({ bids: [{ price: '99.99', quantity: '10' }] }),
+      testSnapshot({ bids: [{ price: '99', quantity: '10' }] }),
+      testSnapshot({ bids: [{ price: '99', quantity: '10' }] }),
     ]);
     const service = createService(provider, demo);
     const position = await service.createManualPosition({
