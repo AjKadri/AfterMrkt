@@ -74,7 +74,8 @@ function formatMoneyForSummary(value, fallback = '--') {
 function formatFeeRatePercent(rate) {
   const numeric = Number(rate);
   if (rate === null || rate === undefined || rate === '' || !Number.isFinite(numeric)) return null;
-  return `${Number((numeric * 100).toFixed(4))}%`;
+  // 0.05% is Bitget's VIP 0 spot taker rate, the default tier this estimate assumes.
+  return `${Number((numeric * 100).toFixed(4))}%${numeric === 0.0005 ? ' · VIP 0 rate' : ''}`;
 }
 
 function formatNumber(value, fallback = '--') {

@@ -1669,7 +1669,7 @@ async function generateDecisionStressTest(
     liquidityCondition: simulation.condition.label,
     nativePriceConfirmation: 'unavailable',
     limitations: [
-      simulation.estimateDisclaimer,
+      'The observed-book estimate is not a guaranteed fill.',
       ...(context?.limitations ?? []),
       'Native-price confirmation is unavailable in the current product phase.',
       ...(simulation.freshness.state === 'fresh'
