@@ -7,6 +7,7 @@ import {
   type QwenWorkspaceQuestionPacket,
 } from '../adapters/qwen/index.js';
 import { ProbeError } from '../lib/errors.js';
+import { allowedNumberSet, formatFactForQwen } from '../lib/qwen-numbers.js';
 import type { AfterMrktContext } from './market-context.js';
 import type { ExitSimulation } from './market-quality.js';
 import type { TraderDecision } from './execution-types.js';
@@ -166,6 +167,10 @@ export function buildWorkspaceFactRegistry(
       'units',
     );
     add('exit_vwap', 'Exit VWAP', simulation.estimatedVWAP, 'price');
+    add('exit_gross_proceeds', 'Exit gross proceeds', simulation.totalExpectedProceeds, 'quote');
+    add('exit_fee', 'Exit taker fee', simulation.estimatedFee, 'quote');
+    add('exit_net_proceeds', 'Exit net proceeds', simulation.netExpectedProceeds, 'quote');
+    add('exit_fee_rate', 'Exit taker fee rate', simulation.takerFeeRate, 'ratio');
     add('exit_slippage', 'Exit slippage', simulation.slippageVersusMidpointBps, 'bps');
     add(
       'exit_fill_ratio',
@@ -195,6 +200,38 @@ export function buildWorkspaceFactRegistry(
       'Exit VWAP',
       null,
       'price',
+      'unavailable',
+      'no exit simulation was supplied for this question',
+    );
+    add(
+      'exit_gross_proceeds',
+      'Exit gross proceeds',
+      null,
+      'quote',
+      'unavailable',
+      'no exit simulation was supplied for this question',
+    );
+    add(
+      'exit_fee',
+      'Exit taker fee',
+      null,
+      'quote',
+      'unavailable',
+      'no exit simulation was supplied for this question',
+    );
+    add(
+      'exit_net_proceeds',
+      'Exit net proceeds',
+      null,
+      'quote',
+      'unavailable',
+      'no exit simulation was supplied for this question',
+    );
+    add(
+      'exit_fee_rate',
+      'Exit taker fee rate',
+      null,
+      'ratio',
       'unavailable',
       'no exit simulation was supplied for this question',
     );
@@ -311,7 +348,17 @@ export async function runWorkspaceQuestion(
         ...packet,
         ...(retryInstruction === undefined ? {} : { retryInstruction }),
       });
-      const validated = validateWorkspaceQuestionCall(call, client.model, facts);
+      const validated = validateWorkspaceQuestionCall(
+        call,
+        client.model,
+        facts,
+        allowedNumberSet([
+          input.question,
+          input.providerSymbol,
+          packet.nativeTicker ?? '',
+          ...factPacket.flatMap((fact) => [fact.id, fact.label, fact.summary]),
+        ]),
+      );
       return {
         facts,
         result: {
@@ -357,10 +404,11 @@ function validateWorkspaceQuestionCall(
   call: QwenCall,
   configuredModel: string,
   facts: WorkspaceGroundingFact[],
+  allowedNumbers: Set<string>,
 ): { parsed: ReturnType<typeof parseQwenWorkspaceQuestion>; providerReportedModel: string | null } {
   let parsed: ReturnType<typeof parseQwenWorkspaceQuestion>;
   try {
-    parsed = parseQwenWorkspaceQuestion(call.content);
+    parsed = parseQwenWorkspaceQuestion(call.content, { allowedNumbers });
   } catch (error) {
     if (error instanceof ProbeError && error.status === 'malformed_provider_data') {
       throw new WorkspaceQuestionValidationError(
@@ -412,7 +460,7 @@ function retryInstructionFor(
 ): string | null {
   switch (code) {
     case 'numeric_claim':
-      return 'The previous answer used numeric literals. Rewrite it without digits, numeric words used as values, prices, quantities, percentages, basis points, or financial formatting. Deterministic AfterMrkt facts render numbers separately.';
+      return 'The previous answer used a number that is not in the fact registry. Use only numbers copied exactly from the fact summaries, or none.';
     case 'recommendation':
       return 'The previous answer used recommendation or action language. Rewrite it as neutral research context. Do not tell the trader what to do, choose a decision, or use recommendation, buy, sell, hold, exit, execute, or order language.';
     case 'unknown_fact':
@@ -429,16 +477,13 @@ function retryInstructionFor(
 }
 
 function qwenSummary(fact: WorkspaceGroundingFact): string {
-  if (fact.status === 'unavailable')
-    return `${fact.label} is unavailable: ${redactNumericLiterals(fact.reason ?? 'unknown reason')}.`;
-  if (fact.unit === 'text' || fact.unit === 'status') {
-    return `${fact.label}: ${redactNumericLiterals(fact.value ?? '')}`;
+  if (fact.status === 'unavailable') {
+    return `${fact.label} is unavailable: ${fact.reason ?? 'unknown reason'}.`;
   }
-  return `${fact.label} is available as a deterministic AfterMrkt fact. Its numeric value is rendered separately by AfterMrkt.`;
-}
-
-function redactNumericLiterals(value: string): string {
-  return value.replace(/\p{N}+/gu, '[value omitted]');
+  if (fact.unit === 'text' || fact.unit === 'status') {
+    return `${fact.label}: ${fact.value ?? ''}`;
+  }
+  return `${fact.label}: ${formatFactForQwen(fact.value ?? '', fact.unit)}`;
 }
 
 function topicForQuestion(question: string): WorkspaceQuestionResult['topic'] {

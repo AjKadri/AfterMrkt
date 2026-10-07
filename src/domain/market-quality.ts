@@ -11,6 +11,8 @@ export const DEFAULT_MARKET_QUALITY_CONFIG = Object.freeze({
   wideSpreadBps: '100',
   impairedSlippageBps: '100',
   minFillRatioWithin50Bps: '0.80',
+  // Bitget VIP 0 spot taker rate. Configurable via AFTERMRKT_TAKER_FEE_RATE.
+  takerFeeRate: '0.0005',
   freshness: DEFAULT_FRESHNESS_CONFIG,
 });
 
@@ -19,6 +21,7 @@ export type MarketQualityConfig = {
   wideSpreadBps: string;
   impairedSlippageBps: string;
   minFillRatioWithin50Bps: string;
+  takerFeeRate: string;
   freshness: FreshnessConfig;
 };
 
@@ -86,6 +89,9 @@ export type ExitSimulation = {
   spreadBps: string | null;
   estimatedVWAP: string | null;
   totalExpectedProceeds: string;
+  takerFeeRate: string;
+  estimatedFee: string;
+  netExpectedProceeds: string;
   slippageVersusMidpointBps: string | null;
   slippageVersusBestBidBps: string | null;
   levelsConsumed: number;
@@ -292,6 +298,11 @@ export function simulateExit(input: SimulationInput): ExitSimulation {
     spreadBps: metrics.spreadBps,
     estimatedVWAP: vwap?.toFixed() ?? null,
     totalExpectedProceeds: execution.proceeds.toFixed(),
+    takerFeeRate: config.takerFeeRate,
+    estimatedFee: execution.proceeds.times(config.takerFeeRate).toFixed(),
+    netExpectedProceeds: execution.proceeds
+      .minus(execution.proceeds.times(config.takerFeeRate))
+      .toFixed(),
     slippageVersusMidpointBps: slippageVersusMidpoint?.toFixed() ?? null,
     slippageVersusBestBidBps: slippageVersusBestBid?.toFixed() ?? null,
     levelsConsumed: execution.levelsConsumed,
@@ -645,6 +656,9 @@ function unavailableSimulation(
     spreadBps: null,
     estimatedVWAP: null,
     totalExpectedProceeds: '0',
+    takerFeeRate: resolveMarketQualityConfig(input.config).takerFeeRate,
+    estimatedFee: '0',
+    netExpectedProceeds: '0',
     slippageVersusMidpointBps: null,
     slippageVersusBestBidBps: null,
     levelsConsumed: 0,
@@ -695,4 +709,16 @@ function reason(
   detail: string,
 ): ExecutionReason {
   return { metric, value, threshold, detail };
+}
+
+export const DEFAULT_TAKER_FEE_RATE = DEFAULT_MARKET_QUALITY_CONFIG.takerFeeRate;
+
+/** Parses a non-negative decimal below 1; anything else falls back to the default. */
+export function parseTakerFeeRate(value: string | undefined): string {
+  const trimmed = value?.trim();
+  if (trimmed === undefined || !/^\d+(?:\.\d+)?$/u.test(trimmed)) return DEFAULT_TAKER_FEE_RATE;
+  const parsed = safeDecimal(trimmed);
+  return parsed !== null && parsed.gte(0) && parsed.lt(1)
+    ? parsed.toFixed()
+    : DEFAULT_TAKER_FEE_RATE;
 }

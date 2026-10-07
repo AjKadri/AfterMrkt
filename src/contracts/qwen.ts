@@ -34,10 +34,10 @@ export type QwenEvent = z.infer<typeof QwenEventSchema>;
 
 export const QwenDecisionStressTestSchema = z
   .object({
-    immediateExit: z.string().min(1),
-    evidence: z.string().min(1),
-    mainUncertainty: z.string().min(1),
-    considerations: z.array(z.string().min(1)).min(1).max(4),
+    immediateExit: z.string().min(1).max(320),
+    evidence: z.string().min(1).max(420),
+    mainUncertainty: z.string().min(1).max(260),
+    considerations: z.array(z.string().min(1).max(170)).min(1).max(3),
     model: z.string().min(1),
     promptVersion: z.string().min(1),
   })

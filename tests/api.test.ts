@@ -93,6 +93,9 @@ describe('AfterMrkt API contracts', () => {
           currentPrice: string | null;
           estimatedVwap: string | null;
           estimatedProceeds: string;
+          feeRate: string;
+          estimatedFee: string;
+          netProceeds: string;
           condition: string;
           reasons: unknown[];
           disclaimer: string;
@@ -104,11 +107,50 @@ describe('AfterMrkt API contracts', () => {
         currentPrice: '100.5',
         estimatedVwap: '100',
         estimatedProceeds: '500',
+        feeRate: '0.0005',
+        estimatedFee: '0.25',
+        netProceeds: '499.75',
         condition: 'execution-normal',
         disclaimer: 'observed-book-estimate-not-guaranteed-fill',
         executionCapabilities: { simulation: 'available' },
       });
       expect(body.data.reasons.length).toBeGreaterThan(0);
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
+
+  it('sends rounded numbers and a capped limitation list to the stress test', async () => {
+    let packet: Record<string, unknown> | null = null;
+    const qwen: DecisionStressTestClient = {
+      model: 'qwen3.8-max',
+      stressTestDecision: async (input) => {
+        packet = input as unknown as Record<string, unknown>;
+        return { content: '{}', providerReportedModel: 'qwen3.8-max' } as QwenCall;
+      },
+    };
+    const server = createApiServer({ marketData: testProvider(), now: () => NOW, qwen });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('no port');
+    try {
+      await fetch(`http://127.0.0.1:${address.port}/api/execution/simulations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ symbol: 'RMUUSDT', quantity: '5', includeDecisionStressTest: true }),
+      });
+      const sent = packet as Record<string, unknown> | null;
+      expect(sent).not.toBeNull();
+      for (const [key, value] of Object.entries(sent ?? {})) {
+        if (typeof value === 'string' && /^-?[\d.]+%?$/u.test(value)) {
+          expect(value.length, key).toBeLessThanOrEqual(16);
+        }
+      }
+      expect(sent?.estimatedFee).toBe('0.25');
+      expect(sent?.netProceeds).toBe('499.75');
+      expect(sent?.takerFeeRate).toBe('0.05%');
+      expect((sent?.limitations as string[]).length).toBeLessThanOrEqual(4);
     } finally {
       server.close();
       await once(server, 'close');
@@ -131,7 +173,7 @@ describe('AfterMrkt API contracts', () => {
               'Immediacy accepts more book impact.',
             ],
             model: 'qwen3.8-max',
-            promptVersion: 'decision-stress-test-v1',
+            promptVersion: 'decision-stress-test-v2',
           }),
           providerReportedModel: 'qwen3.8-max',
         } as QwenCall;
@@ -224,7 +266,7 @@ describe('AfterMrkt API contracts', () => {
             mainUncertainty: 'The next book is unknown.',
             considerations: ['Review the supplied facts.'],
             model: 'qwen3.8-max',
-            promptVersion: 'decision-stress-test-v1',
+            promptVersion: 'decision-stress-test-v2',
           }),
           providerReportedModel: 'qwen3.8-max',
         } as QwenCall;
@@ -244,7 +286,7 @@ describe('AfterMrkt API contracts', () => {
       });
       expect(response.status).toBe(200);
       expect(observedInput).toMatchObject({
-        moveSinceNativeClosePercent: '0.5',
+        moveSinceNativeClosePercent: '0.50%',
         sessionState: 'closed',
         nativeTicker: 'MU',
       });
@@ -272,7 +314,7 @@ describe('AfterMrkt API contracts', () => {
             mainUncertainty: 'The book may change before confirmation.',
             considerations: ['Review the deterministic facts before confirming.'],
             model: 'qwen3.8-max',
-            promptVersion: 'decision-stress-test-v1',
+            promptVersion: 'decision-stress-test-v2',
           }),
           providerReportedModel: 'qwen3.8-max',
         } as QwenCall;
@@ -360,7 +402,7 @@ describe('AfterMrkt API contracts', () => {
               supportingFactIds: [],
               uncertainties: [],
               model: 'qwen3.8-max',
-              promptVersion: 'workspace-question-v1',
+              promptVersion: 'workspace-question-v2',
             }),
             providerReportedModel: 'qwen3.8-max',
           } as QwenCall;
@@ -379,7 +421,7 @@ describe('AfterMrkt API contracts', () => {
               ? ['The observed book can change before a later review.']
               : ['The source event record is unavailable in this context.'],
             model: 'qwen3.8-max',
-            promptVersion: 'workspace-question-v1',
+            promptVersion: 'workspace-question-v2',
           }),
           providerReportedModel: 'qwen3.8-max',
         } as QwenCall;
@@ -445,7 +487,9 @@ describe('AfterMrkt API contracts', () => {
         expect.objectContaining({ id: 'event_status', value: 'insufficient-event-evidence' }),
       ]);
       expect(body.data.sources.length).toBeGreaterThan(0);
-      expect(observedFacts.find((fact) => fact.id === 'current_price')?.summary).not.toMatch(/100/);
+      expect(observedFacts.find((fact) => fact.id === 'current_price')?.summary).toBe(
+        'Current rToken price: 100.50',
+      );
       expect(observedFacts.find((fact) => fact.id === 'event_status')?.summary).toContain(
         'insufficient-event-evidence',
       );
@@ -515,7 +559,7 @@ describe('AfterMrkt API contracts', () => {
               supportingFactIds: ['event_status'],
               uncertainties: [],
               model: 'qwen3.8-max',
-              promptVersion: 'workspace-question-v1',
+              promptVersion: 'workspace-question-v2',
             }),
             providerReportedModel: 'qwen3.8-max',
           }) as QwenCall,
@@ -591,7 +635,7 @@ describe('AfterMrkt API contracts', () => {
             mainUncertainty: 'The next book is unknown.',
             considerations: ['Review the supplied facts.'],
             model: 'qwen3.8-max',
-            promptVersion: 'decision-stress-test-v1',
+            promptVersion: 'decision-stress-test-v2',
           }),
           providerReportedModel: 'qwen3.8-max',
         }) as QwenCall,
