@@ -603,6 +603,7 @@ function bindWorkspaceActions() {
           : 'Choose the exit quantity and order parameters, then review the exit.',
       );
       setText('#decision-result', '');
+      renderBitgetHandoff(null);
       renderDecisionRecord(
         {
           decision: kind,
@@ -638,6 +639,7 @@ function bindWorkspaceActions() {
     if (review) review.hidden = true;
     $$('.decision-choice').forEach((item) => item.classList.remove('is-selected'));
     setText('#decision-result', '');
+    renderBitgetHandoff(null);
   });
   $('#decision-order-type')?.addEventListener('change', (event) => {
     const limitWrap = $('#decision-limit-price-wrap');
@@ -990,11 +992,83 @@ async function reviewTraderDecision() {
     state.decisionToken = response.data.confirmationToken;
     renderDecisionRecord(response.data.decision);
     setText('#decision-result', 'Decision ready. No order has been placed.');
+    renderBitgetHandoff(null);
   } catch (error) {
     setText('#decision-status', errorText(error));
   } finally {
     if (reviewButton) reviewButton.disabled = false;
   }
+}
+
+/**
+ * After a paper exit is recorded, show the order values for the trader to enter on Bitget
+ * themselves. AfterMrkt never places the order; this only links to the pair's spot page.
+ */
+function renderBitgetHandoff(decision) {
+  const container = $('#decision-handoff');
+  if (!container) return;
+  container.replaceChildren();
+  const isExit = decision?.decision === 'partial_exit' || decision?.decision === 'full_exit';
+  const symbol = decision?.providerSymbol;
+  if (!isExit || !symbol || !/^[A-Z0-9]+$/.test(symbol)) {
+    container.hidden = true;
+    return;
+  }
+  const simulation = decision.simulation;
+  const title = document.createElement('h4');
+  title.textContent = 'Take the final call on Bitget';
+  const intro = document.createElement('p');
+  intro.textContent =
+    'AfterMrkt has not placed an order. Enter these values on Bitget yourself if you decide to trade.';
+  const list = document.createElement('dl');
+  const addRow = (label, value, copyValue) => {
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const detail = document.createElement('dd');
+    detail.textContent = value;
+    const action = document.createElement('span');
+    if (copyValue) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'Copy';
+      button.addEventListener('click', async () => {
+        try {
+          await window.navigator.clipboard.writeText(copyValue);
+          button.textContent = 'Copied';
+        } catch {
+          button.textContent = 'Copy failed';
+        }
+        window.setTimeout(() => {
+          button.textContent = 'Copy';
+        }, 1500);
+      });
+      action.append(button);
+    }
+    list.append(term, detail, action);
+  };
+  const isLimit = decision.orderType === 'limit' && decision.limitPrice;
+  addRow('Pair', symbol, symbol);
+  addRow('Side', 'Sell');
+  addRow('Order type', isLimit ? 'Limit' : 'Market');
+  if (isLimit) addRow('Limit price', formatMoney(decision.limitPrice), String(decision.limitPrice));
+  addRow(
+    'Quantity',
+    `${formatNumber(decision.requestedQuantity)} units`,
+    String(decision.requestedQuantity),
+  );
+  const net = simulation?.netExpectedProceeds ?? simulation?.netProceeds;
+  if (net !== undefined && net !== null) addRow('Estimated net proceeds', formatMoney(net));
+  const link = document.createElement('a');
+  link.href = `https://www.bitget.com/trade-spot/${encodeURIComponent(symbol)}`;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = `Open ${symbol} on Bitget`;
+  const note = document.createElement('p');
+  note.style.margin = '12px 0 0';
+  note.textContent =
+    'The estimate came from the observed order book and is not a guaranteed fill. Bitget opens in whichever mode your account is in, demo or live.';
+  container.append(title, intro, list, link, note);
+  container.hidden = false;
 }
 
 async function confirmTraderDecision() {
@@ -1023,6 +1097,7 @@ async function confirmTraderDecision() {
         'The book changed before confirmation. Review the refreshed deterministic values and confirm again.',
       );
       setText('#decision-result', 'NOT RECORDED YET · PRICES MOVED · REVIEW AND CONFIRM AGAIN');
+      renderBitgetHandoff(null);
       return;
     }
     state.decisionEnvelope = { data: { decision: result.decision } };
@@ -1035,6 +1110,7 @@ async function confirmTraderDecision() {
           ? 'HOLD DECISION RECORDED · NO ORDER CREATED'
           : `DECISION CONFIRMED · ${String(result.decision.executionStatus).toUpperCase()}`,
     );
+    renderBitgetHandoff(result.decision);
   } catch (error) {
     setText('#decision-status', errorText(error));
   } finally {
@@ -1179,6 +1255,7 @@ function resetWorkspaceView(symbol) {
     button.disabled = true;
   });
   setText('#decision-result', '');
+  renderBitgetHandoff(null);
   setText('#decision-status', 'Run a successful simulation to choose a trader decision.');
   const decisionQuantity = $('#decision-requested-quantity');
   if (decisionQuantity) decisionQuantity.readOnly = false;
