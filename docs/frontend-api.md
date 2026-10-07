@@ -145,6 +145,9 @@ The product response includes:
   "midpoint": "228.70",
   "estimatedVwap": "228.69",
   "estimatedProceeds": "11.4345",
+  "feeRate": "0.0005",
+  "estimatedFee": "0.00571725",
+  "netProceeds": "11.42878275",
   "spreadBps": "0.437",
   "slippageBps": "0.219",
   "slippageVsBestBidBps": "0",
@@ -186,7 +189,7 @@ Add `"includeDecisionStressTest": true` to one successful live simulation reques
     "considerations": ["A smaller exit reduces current book impact but leaves more exposure."],
     "model": "qwen3.8-max",
     "providerReportedModel": "qwen3.8-max",
-    "promptVersion": "decision-stress-test-v1",
+    "promptVersion": "decision-stress-test-v2",
     "processedAt": "2026-09-30T21:11:29.078Z",
     "inputHash": "..."
   }

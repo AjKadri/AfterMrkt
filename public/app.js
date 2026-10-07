@@ -71,6 +71,13 @@ function formatMoneyForSummary(value, fallback = '--') {
   return `$${numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function formatFeeRatePercent(rate) {
+  const numeric = Number(rate);
+  if (rate === null || rate === undefined || rate === '' || !Number.isFinite(numeric)) return null;
+  // 0.05% is Bitget's VIP 0 spot taker rate, the default tier this estimate assumes.
+  return `${Number((numeric * 100).toFixed(4))}%${numeric === 0.0005 ? ' · VIP 0 rate' : ''}`;
+}
+
 function formatNumber(value, fallback = '--') {
   if (value === null || value === undefined || value === '') return fallback;
   const numeric = Number(value);
@@ -596,6 +603,7 @@ function bindWorkspaceActions() {
           : 'Choose the exit quantity and order parameters, then review the exit.',
       );
       setText('#decision-result', '');
+      renderBitgetHandoff(null);
       renderDecisionRecord(
         {
           decision: kind,
@@ -631,6 +639,7 @@ function bindWorkspaceActions() {
     if (review) review.hidden = true;
     $$('.decision-choice').forEach((item) => item.classList.remove('is-selected'));
     setText('#decision-result', '');
+    renderBitgetHandoff(null);
   });
   $('#decision-order-type')?.addEventListener('change', (event) => {
     const limitWrap = $('#decision-limit-price-wrap');
@@ -743,9 +752,20 @@ function renderExitExplanation(simulation) {
         ? `${unfilled} units would remain unfilled within the observed depth, which was limited to ${depthLimit.value} bid levels; liquidity beyond them is unknown.`
         : `${unfilled} units would remain without a matching bid in this snapshot.`
       : 'The captured bids could absorb the full requested amount.';
+  const feeAmount = Number(simulation.estimatedFee);
+  const netAmount = Number(simulation.netProceeds);
+  const feeRatePercent = formatFeeRatePercent(simulation.feeRate);
+  const feeSentence =
+    simulation.estimatedFee !== undefined &&
+    simulation.estimatedFee !== null &&
+    Number.isFinite(feeAmount) &&
+    Number.isFinite(netAmount) &&
+    feeAmount > 0
+      ? ` After an estimated taker fee of ${formatMoneyForSummary(simulation.estimatedFee)}${feeRatePercent ? ` (${feeRatePercent})` : ''}, net proceeds would be about ${formatMoneyForSummary(simulation.netProceeds)}.`
+      : '';
   explanation.append(
     document.createTextNode(
-      `For ${requested} units of ${simulation.symbol}, ${fillSentence} ${unfilledSentence} Only ${within50Text} of the requested amount could be sold within 0.50% of the midpoint. That is a simulated estimate, not a guaranteed fill.`,
+      `For ${requested} units of ${simulation.symbol}, ${fillSentence}${feeSentence} ${unfilledSentence} Only ${within50Text} of the requested amount could be sold within 0.50% of the midpoint. That is a simulated estimate, not a guaranteed fill.`,
     ),
   );
 }
@@ -813,6 +833,13 @@ function renderDecisionRecord(decision, { awaitingReview = false } = {}) {
   setText(
     '#decision-proceeds',
     formatMoney(simulation?.totalExpectedProceeds ?? simulation?.estimatedProceeds),
+  );
+  const feeRatePercent = formatFeeRatePercent(simulation?.takerFeeRate ?? simulation?.feeRate);
+  setText('#decision-fee-label', feeRatePercent ? `Taker fee (${feeRatePercent})` : 'Taker fee');
+  setText('#decision-fee', formatMoney(simulation?.estimatedFee));
+  setText(
+    '#decision-net-proceeds',
+    formatMoney(simulation?.netExpectedProceeds ?? simulation?.netProceeds),
   );
   setText(
     '#decision-slippage',
@@ -892,6 +919,9 @@ function simulationViewFromDecision(decision, previousSimulation) {
     midpoint: simulation.midpoint,
     estimatedVwap: simulation.estimatedVWAP,
     estimatedProceeds: simulation.totalExpectedProceeds,
+    feeRate: simulation.takerFeeRate,
+    estimatedFee: simulation.estimatedFee,
+    netProceeds: simulation.netExpectedProceeds,
     absoluteSpread: simulation.absoluteSpread,
     spreadBps: simulation.spreadBps,
     slippageBps: simulation.slippageVersusMidpointBps,
@@ -962,11 +992,83 @@ async function reviewTraderDecision() {
     state.decisionToken = response.data.confirmationToken;
     renderDecisionRecord(response.data.decision);
     setText('#decision-result', 'Decision ready. No order has been placed.');
+    renderBitgetHandoff(null);
   } catch (error) {
     setText('#decision-status', errorText(error));
   } finally {
     if (reviewButton) reviewButton.disabled = false;
   }
+}
+
+/**
+ * After a paper exit is recorded, show the order values for the trader to enter on Bitget
+ * themselves. AfterMrkt never places the order; this only links to the pair's spot page.
+ */
+function renderBitgetHandoff(decision) {
+  const container = $('#decision-handoff');
+  if (!container) return;
+  container.replaceChildren();
+  const isExit = decision?.decision === 'partial_exit' || decision?.decision === 'full_exit';
+  const symbol = decision?.providerSymbol;
+  if (!isExit || !symbol || !/^[A-Z0-9]+$/.test(symbol)) {
+    container.hidden = true;
+    return;
+  }
+  const simulation = decision.simulation;
+  const title = document.createElement('h4');
+  title.textContent = 'Take the final call on Bitget';
+  const intro = document.createElement('p');
+  intro.textContent =
+    'AfterMrkt has not placed an order. Enter these values on Bitget yourself if you decide to trade.';
+  const list = document.createElement('dl');
+  const addRow = (label, value, copyValue) => {
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const detail = document.createElement('dd');
+    detail.textContent = value;
+    const action = document.createElement('span');
+    if (copyValue) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'Copy';
+      button.addEventListener('click', async () => {
+        try {
+          await window.navigator.clipboard.writeText(copyValue);
+          button.textContent = 'Copied';
+        } catch {
+          button.textContent = 'Copy failed';
+        }
+        window.setTimeout(() => {
+          button.textContent = 'Copy';
+        }, 1500);
+      });
+      action.append(button);
+    }
+    list.append(term, detail, action);
+  };
+  const isLimit = decision.orderType === 'limit' && decision.limitPrice;
+  addRow('Pair', symbol, symbol);
+  addRow('Side', 'Sell');
+  addRow('Order type', isLimit ? 'Limit' : 'Market');
+  if (isLimit) addRow('Limit price', formatMoney(decision.limitPrice), String(decision.limitPrice));
+  addRow(
+    'Quantity',
+    `${formatNumber(decision.requestedQuantity)} units`,
+    String(decision.requestedQuantity),
+  );
+  const net = simulation?.netExpectedProceeds ?? simulation?.netProceeds;
+  if (net !== undefined && net !== null) addRow('Estimated net proceeds', formatMoney(net));
+  const link = document.createElement('a');
+  link.href = `https://www.bitget.com/trade-spot/${encodeURIComponent(symbol)}`;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = `Open ${symbol} on Bitget`;
+  const note = document.createElement('p');
+  note.style.margin = '12px 0 0';
+  note.textContent =
+    'The estimate came from the observed order book and is not a guaranteed fill. Bitget opens in whichever mode your account is in, demo or live.';
+  container.append(title, intro, list, link, note);
+  container.hidden = false;
 }
 
 async function confirmTraderDecision() {
@@ -995,6 +1097,7 @@ async function confirmTraderDecision() {
         'The book changed before confirmation. Review the refreshed deterministic values and confirm again.',
       );
       setText('#decision-result', 'NOT RECORDED YET · PRICES MOVED · REVIEW AND CONFIRM AGAIN');
+      renderBitgetHandoff(null);
       return;
     }
     state.decisionEnvelope = { data: { decision: result.decision } };
@@ -1007,6 +1110,7 @@ async function confirmTraderDecision() {
           ? 'HOLD DECISION RECORDED · NO ORDER CREATED'
           : `DECISION CONFIRMED · ${String(result.decision.executionStatus).toUpperCase()}`,
     );
+    renderBitgetHandoff(result.decision);
   } catch (error) {
     setText('#decision-status', errorText(error));
   } finally {
@@ -1151,6 +1255,7 @@ function resetWorkspaceView(symbol) {
     button.disabled = true;
   });
   setText('#decision-result', '');
+  renderBitgetHandoff(null);
   setText('#decision-status', 'Run a successful simulation to choose a trader decision.');
   const decisionQuantity = $('#decision-requested-quantity');
   if (decisionQuantity) decisionQuantity.readOnly = false;

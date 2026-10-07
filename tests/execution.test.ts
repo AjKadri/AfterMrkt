@@ -224,7 +224,7 @@ describe('deterministic position and confirmation workflow', () => {
         considerations: ['Review the deterministic facts.'],
         model: 'qwen3.8-max',
         providerReportedModel: 'qwen3.8-max',
-        promptVersion: 'decision-stress-test-v1',
+        promptVersion: 'decision-stress-test-v2',
         processedAt: NOW.toISOString(),
         inputHash: 'a'.repeat(64),
       },

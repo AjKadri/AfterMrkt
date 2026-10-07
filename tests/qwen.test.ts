@@ -156,6 +156,9 @@ describe('Qwen event contract', () => {
         fillRatioWithin50Bps: '1',
         estimatedVwap: '100',
         slippageBps: '1',
+        estimatedFee: '0.05',
+        netProceeds: '99.95',
+        takerFeeRate: '5.0%',
         nativePriceConfirmation: 'unavailable',
         limitations: [],
       });
@@ -184,7 +187,7 @@ describe('Qwen event contract', () => {
                   supportingFactIds: ['liquidity_condition'],
                   uncertainties: ['The book can change before review.'],
                   model: 'qwen3.8-max',
-                  promptVersion: 'workspace-question-v1',
+                  promptVersion: 'workspace-question-v2',
                 }),
               },
             },
@@ -409,6 +412,9 @@ describe('Qwen decision stress contract', () => {
         fillRatioWithin50Bps: '1',
         estimatedVwap: '100',
         slippageBps: '0',
+        estimatedFee: '0.05',
+        netProceeds: '99.95',
+        takerFeeRate: '5.0%',
         nativePriceConfirmation: 'unavailable',
         limitations: [],
         processedAt: '2026-09-29T22:00:00.000Z',
@@ -462,5 +468,91 @@ describe('Qwen workspace answer filters', () => {
         workspaceAnswer('Roughly five percent of the position would go unfilled.'),
       ),
     ).toThrow(/ungrounded numeric claim/);
+  });
+});
+
+describe('decision stress test validation and retry', () => {
+  const packet = {
+    providerSymbol: 'RMUUSDT',
+    nativeTicker: 'MU',
+    moveSinceNativeClosePercent: null,
+    sessionState: 'unavailable',
+    sourceEventStatus: 'not_applicable',
+    sourceEventFacts: [],
+    spreadBps: '2.82 bps',
+    freshnessState: 'fresh',
+    liquidityCondition: 'execution-normal',
+    requestedQuantity: '5',
+    filledQuantity: '5',
+    unfilledQuantity: '0',
+    fillRatioWithin50Bps: '100.0%',
+    estimatedVwap: '100.00',
+    slippageBps: '0.00 bps',
+    estimatedFee: '0.25',
+    netProceeds: '499.75',
+    takerFeeRate: '0.1%',
+    nativePriceConfirmation: 'unavailable',
+    limitations: [],
+    processedAt: '2026-09-29T22:00:00.000Z',
+  };
+  const answer = (overrides: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      immediateExit: 'The observed depth absorbs the amount.',
+      evidence: 'The spread is 2.82 bps and net proceeds are 499.75.',
+      mainUncertainty: 'The next book is unknown.',
+      considerations: ['The fee reduces net proceeds.'],
+      model: 'qwen3.8-max',
+      promptVersion: QWEN_DECISION_STRESS_PROMPT_VERSION,
+      ...overrides,
+    });
+  const clientFor = (contents: string[], reported = 'qwen3.8-max') => {
+    const calls: Array<{ retryInstruction?: string }> = [];
+    return {
+      calls,
+      client: {
+        model: 'qwen3.8-max',
+        stressTestDecision: async (input: { retryInstruction?: string }) => {
+          calls.push(input);
+          return {
+            content: contents[Math.min(calls.length - 1, contents.length - 1)],
+            providerReportedModel: reported,
+          } as QwenCall;
+        },
+      },
+    };
+  };
+
+  it('accepts grounded numbers and rejects ungrounded ones with a safe reason', async () => {
+    const good = clientFor([answer()]);
+    expect((await runDecisionStressTest(good.client, packet)).status).toBe('available');
+    const bad = clientFor([answer({ evidence: 'The spread is 9 bps.' })]);
+    const result = await runDecisionStressTest(bad.client, packet);
+    expect(result).toMatchObject({
+      status: 'unavailable',
+      reason:
+        'Qwen decision stress testing is unavailable: the answer failed validation (ungrounded number).',
+    });
+    expect(bad.calls).toHaveLength(2);
+  });
+
+  it('retries once and succeeds, keeping the instruction out of the hash', async () => {
+    const retrying = clientFor([answer({ evidence: 'x'.repeat(500) }), answer()]);
+    const result = await runDecisionStressTest(retrying.client, packet);
+    expect(result.status).toBe('available');
+    expect(retrying.calls[1]?.retryInstruction).toMatch(/too long/);
+    const direct = await runDecisionStressTest(clientFor([answer()]).client, packet);
+    expect(result.inputHash).toBe(direct.inputHash);
+  });
+
+  it('reports over-length answers and does not retry model mismatches', async () => {
+    const long = await runDecisionStressTest(
+      clientFor([answer({ immediateExit: 'y'.repeat(400) })]).client,
+      packet,
+    );
+    expect(long).toMatchObject({ reason: expect.stringContaining('(too long)') });
+    const mismatch = clientFor([answer({ model: 'other' })]);
+    const result = await runDecisionStressTest(mismatch.client, packet);
+    expect(result).toMatchObject({ reason: expect.stringContaining('(model mismatch)') });
+    expect(mismatch.calls).toHaveLength(1);
   });
 });

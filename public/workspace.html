@@ -989,6 +989,54 @@
         cursor: wait;
         opacity: 0.5;
       }
+      .decision-handoff {
+        margin-top: 17px;
+        padding: 16px;
+        border: 1px solid var(--black);
+        border-radius: 12px;
+      }
+      .decision-handoff h4 {
+        margin: 0 0 4px;
+        font-size: 15px;
+      }
+      .decision-handoff p {
+        margin: 0 0 12px;
+        font-size: 13px;
+      }
+      .decision-handoff dl {
+        display: grid;
+        grid-template-columns: max-content 1fr max-content;
+        gap: 8px 14px;
+        align-items: center;
+        margin: 0 0 14px;
+        font-size: 13px;
+      }
+      .decision-handoff dt {
+        opacity: 0.7;
+      }
+      .decision-handoff dd {
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-weight: 600;
+      }
+      .decision-handoff button {
+        padding: 4px 10px;
+        border: 1px solid currentColor;
+        border-radius: 999px;
+        background: transparent;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .decision-handoff a {
+        display: inline-block;
+        padding: 10px 16px;
+        border-radius: 999px;
+        color: #f6fbfb;
+        background: var(--black);
+        font-size: 13px;
+        font-weight: 600;
+        text-decoration: none;
+      }
       .decision-review {
         margin-top: 17px;
         padding-top: 17px;
@@ -1832,7 +1880,13 @@
                 <span>Estimated VWAP</span><strong id="decision-vwap">--</strong>
               </div>
               <div class="decision-review-item">
-                <span>Estimated proceeds</span><strong id="decision-proceeds">--</strong>
+                <span>Gross proceeds</span><strong id="decision-proceeds">--</strong>
+              </div>
+              <div class="decision-review-item">
+                <span id="decision-fee-label">Taker fee</span><strong id="decision-fee">--</strong>
+              </div>
+              <div class="decision-review-item">
+                <span>Net proceeds</span><strong id="decision-net-proceeds">--</strong>
               </div>
               <div class="decision-review-item">
                 <span>Expected slippage</span><strong id="decision-slippage">--</strong>
@@ -1890,6 +1944,7 @@
               </button>
             </div>
             <p class="decision-result" id="decision-result" aria-live="polite"></p>
+            <div class="decision-handoff" id="decision-handoff" hidden></div>
           </div>
         </section>
 

@@ -192,6 +192,9 @@ export type ProductSimulation = {
   midpoint: string | null;
   estimatedVwap: string | null;
   estimatedProceeds: string;
+  feeRate: string;
+  estimatedFee: string;
+  netProceeds: string;
   absoluteSpread: string | null;
   spreadBps: string | null;
   slippageBps: string | null;
@@ -370,6 +373,9 @@ export function toProductSimulation(input: {
     midpoint: simulation.midpoint,
     estimatedVwap: simulation.estimatedVWAP,
     estimatedProceeds: simulation.totalExpectedProceeds,
+    feeRate: simulation.takerFeeRate,
+    estimatedFee: simulation.estimatedFee,
+    netProceeds: simulation.netExpectedProceeds,
     absoluteSpread: simulation.absoluteSpread,
     spreadBps: simulation.spreadBps,
     slippageBps: simulation.slippageVersusMidpointBps,
