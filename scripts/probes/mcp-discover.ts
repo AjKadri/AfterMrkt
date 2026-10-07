@@ -42,28 +42,87 @@ async function call(name: string, args: Record<string, unknown>, limit: number):
 await client.initialize();
 await client.initialized();
 
-const root = await call('guide', {}, 2500);
-const found = new Set<string>();
-const collect = (text: string): void => {
-  for (const match of text.matchAll(/"(?:entry_id|id)"\s*:\s*"([^"]+)"/gu)) {
-    if (match[1]) found.add(match[1]);
+type Entry = { id: string; label: string; paramNames: string[] };
+const entries = new Map<string, Entry>();
+const subcategories = new Map<string, Set<string>>();
+
+/** Walks any JSON shape and records objects that look like catalog entries or subcategories. */
+function walk(value: unknown, category: string): void {
+  if (Array.isArray(value)) {
+    for (const item of value) walk(item, category);
+    return;
   }
-};
-collect(root);
-for (const keyword of ['quote', 'price', 'realtime']) {
-  collect(await call('guide', { keyword }, 2500));
+  if (typeof value !== 'object' || value === null) return;
+  const record = value as Record<string, unknown>;
+  const id = [record.entry_id, record.id].find((item) => typeof item === 'string');
+  if (typeof id === 'string') {
+    const schema = (record.params ?? record.parameters ?? record.input_schema ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const properties = (schema.properties ?? schema) as Record<string, unknown>;
+    const paramNames = Array.isArray(schema)
+      ? schema.map((item) => String((item as Record<string, unknown>).name ?? ''))
+      : Object.keys(typeof properties === 'object' && properties !== null ? properties : {});
+    entries.set(id, {
+      id,
+      label: `${String(record.name ?? '')} ${String(record.description ?? '')}`,
+      paramNames: paramNames.filter(Boolean),
+    });
+  }
+  const subs = record.subcategories ?? record.sub_categories;
+  if (Array.isArray(subs)) {
+    for (const sub of subs) {
+      const key = typeof sub === 'string' ? sub : (sub as Record<string, unknown>).key;
+      if (typeof key === 'string') {
+        if (!subcategories.has(category)) subcategories.set(category, new Set());
+        subcategories.get(category)?.add(key);
+      }
+    }
+  }
+  for (const child of Object.values(record)) walk(child, category);
 }
 
-const candidates = [...found]
-  .filter((id) => /quote|real.?time|snapshot|last.?price|ticker/iu.test(id))
-  .slice(0, 4);
-console.log(`\ncandidate quote entries: ${JSON.stringify(candidates)}`);
-console.log(`all entry ids seen (${found.size}): ${JSON.stringify([...found].slice(0, 80))}`);
+function ingest(text: string, category: string): void {
+  try {
+    walk(JSON.parse(text), category);
+  } catch {
+    // Non-JSON text is still printed above for reading by hand.
+  }
+}
 
-for (const entryId of candidates) {
-  for (const params of [{ symbol: ticker }, { ticker }, { symbols: [ticker] }]) {
-    const text = await call('do_query', { entry_id: entryId, params }, 1500);
-    if (text !== '' && !/error|invalid|missing|required/iu.test(text.slice(0, 300))) break;
+await call('guide', {}, 600);
+for (const category of ['equity', 'etf', 'news', 'sentiment']) {
+  ingest(await call('guide', { category }, 9000), category);
+  for (const subcategory of subcategories.get(category) ?? []) {
+    ingest(await call('guide', { category, subcategory }, 6000), category);
+  }
+}
+
+console.log(`\nentries found (${entries.size}):`);
+for (const entry of entries.values()) {
+  console.log(
+    `- ${entry.id} | ${entry.label.slice(0, 110)} | params: ${entry.paramNames.join(',')}`,
+  );
+}
+
+const quoteLike = /quote|real.?time|snapshot|price|行情|报价|实时|快照|最新/iu;
+const candidates = [...entries.values()]
+  .filter((entry) => quoteLike.test(`${entry.id} ${entry.label}`))
+  .slice(0, 5);
+console.log(`\ncandidate quote entries: ${JSON.stringify(candidates.map((entry) => entry.id))}`);
+
+for (const entry of candidates) {
+  const symbolParam = entry.paramNames.find((name) => /symbol|ticker|code/iu.test(name));
+  const attempts: Record<string, unknown>[] = [
+    ...(symbolParam ? [{ [symbolParam]: ticker }] : []),
+    { symbol: ticker },
+    { ticker },
+    { symbols: ticker },
+  ];
+  for (const params of attempts) {
+    const text = await call('do_query', { entry_id: entry.id, params }, 1500);
+    if (text !== '' && !/error|invalid|missing|required|unknown/iu.test(text.slice(0, 300))) break;
   }
 }
 
