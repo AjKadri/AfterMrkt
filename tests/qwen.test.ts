@@ -7,6 +7,8 @@ import {
   QwenClient,
   parseQwenDecisionStressTest,
   parseQwenEvent,
+  parseQwenWorkspaceQuestion,
+  QWEN_WORKSPACE_QUESTION_PROMPT_VERSION,
 } from '../src/adapters/qwen/index.js';
 import type { QwenCall } from '../src/adapters/qwen/index.js';
 import { runDecisionStressTest } from '../src/domain/decision-stress-test.js';
@@ -120,6 +122,48 @@ describe('Qwen event contract', () => {
     const client = new QwenClient();
     expect(client.responseFormat.type).toBe('json_schema');
     expect(client.thinkingMode).toBe('disabled');
+  });
+
+  it('tells Qwen the exact model name to echo in the decision stress test', async () => {
+    const originalFetch = globalThis.fetch;
+    const requestBodies: Record<string, unknown>[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({ model: 'qwen3.8-max', choices: [{ message: { content: '{}' } }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+    try {
+      const client = new QwenClient({
+        apiKey: 'test-fixture-key',
+        baseUrl: 'https://example.test/v1',
+        model: 'qwen3.8-max',
+      });
+      await client.stressTestDecision({
+        providerSymbol: 'RMUUSDT',
+        nativeTicker: 'MU',
+        moveSinceNativeClosePercent: null,
+        sessionState: 'closed',
+        sourceEventStatus: 'not_applicable',
+        sourceEventFacts: [],
+        spreadBps: '1',
+        freshnessState: 'fresh',
+        liquidityCondition: 'execution-normal',
+        requestedQuantity: '5',
+        filledQuantity: '5',
+        unfilledQuantity: '0',
+        fillRatioWithin50Bps: '1',
+        estimatedVwap: '100',
+        slippageBps: '1',
+        nativePriceConfirmation: 'unavailable',
+        limitations: [],
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const messages = requestBodies[0]?.messages as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain('Set model to exactly qwen3.8-max.');
   });
 
   it('sends an exact fact allow-list and bounded retry instruction for workspace questions', async () => {
@@ -375,5 +419,48 @@ describe('Qwen decision stress contract', () => {
       model: 'qwen3.8-max',
       providerReportedModel: null,
     });
+  });
+});
+
+describe('Qwen workspace answer filters', () => {
+  const workspaceAnswer = (answer: string) =>
+    JSON.stringify({
+      status: 'answered',
+      topic: 'exit',
+      answer,
+      supportingFactIds: ['exit_fill_ratio'],
+      uncertainties: [],
+      model: 'qwen3.8-max',
+      promptVersion: QWEN_WORKSPACE_QUESTION_PROMPT_VERSION,
+    });
+
+  it.each([
+    'You should probably sell.',
+    'Consider exiting before the open.',
+    'It would be wise to reduce exposure.',
+    'Selling the full position now looks like the prudent choice.',
+    'A partial exit is the better option here.',
+    'I would recommend a partial exit.',
+    'A full exit is not recommended while the book is stale.',
+  ])('rejects advice phrasing: %s', (sentence) => {
+    expect(() => parseQwenWorkspaceQuestion(workspaceAnswer(sentence))).toThrow(
+      /trading recommendation/,
+    );
+  });
+
+  it.each([
+    'A full exit would consume more of the observed book than a partial exit.',
+    'Holding keeps the position exposed to the reopening price.',
+    'AfterMrkt cannot recommend a trade or choose between these scenarios.',
+  ])('allows neutral description: %s', (sentence) => {
+    expect(parseQwenWorkspaceQuestion(workspaceAnswer(sentence)).answer).toBe(sentence);
+  });
+
+  it('rejects number words used as values', () => {
+    expect(() =>
+      parseQwenWorkspaceQuestion(
+        workspaceAnswer('Roughly five percent of the position would go unfilled.'),
+      ),
+    ).toThrow(/ungrounded numeric claim/);
   });
 });

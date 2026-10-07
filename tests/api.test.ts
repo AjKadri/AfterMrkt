@@ -351,6 +351,20 @@ describe('AfterMrkt API contracts', () => {
         calls += 1;
         observedFacts = input.facts;
         const asksAboutLiquidity = /liquidity|exit/i.test(input.question);
+        if (/poem/i.test(input.question)) {
+          return {
+            content: JSON.stringify({
+              status: 'out_of_scope',
+              topic: 'general_context',
+              answer: 'That is outside this instrument context.',
+              supportingFactIds: [],
+              uncertainties: [],
+              model: 'qwen3.8-max',
+              promptVersion: 'workspace-question-v1',
+            }),
+            providerReportedModel: 'qwen3.8-max',
+          } as QwenCall;
+        }
         return {
           content: JSON.stringify({
             status: asksAboutLiquidity ? 'answered' : 'insufficient_evidence',
@@ -474,11 +488,89 @@ describe('AfterMrkt API contracts', () => {
       expect(((await outOfScope.json()) as { data: { status: string } }).data.status).toBe(
         'out_of_scope',
       );
-      expect(calls).toBe(2);
+      expect(calls).toBe(3);
     } finally {
       server.close();
       await once(server, 'close');
     }
+  });
+
+  describe('assistant rate limiting', () => {
+    async function withLimitedServer(
+      limits: { perMinute: number; dailyCap: number },
+      run: (
+        ask: (headers?: Record<string, string>) => Promise<Response>,
+        tick: (ms: number) => void,
+      ) => Promise<void>,
+    ): Promise<void> {
+      let nowMs = NOW.getTime();
+      const assistant: WorkspaceQuestionClient = {
+        model: 'qwen3.8-max',
+        askWorkspaceQuestion: async () =>
+          ({
+            content: JSON.stringify({
+              status: 'insufficient_evidence',
+              topic: 'evidence',
+              answer: 'No verified source event is available.',
+              supportingFactIds: ['event_status'],
+              uncertainties: [],
+              model: 'qwen3.8-max',
+              promptVersion: 'workspace-question-v1',
+            }),
+            providerReportedModel: 'qwen3.8-max',
+          }) as QwenCall,
+      };
+      const server = createApiServer({
+        marketData: testProvider(),
+        snapshots: new InMemorySnapshotStore(),
+        executionStore: new InMemoryExecutionStore(),
+        assistant,
+        assistantRateLimit: limits,
+        now: () => new Date(nowMs),
+      });
+      await listen(server);
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('no port');
+      const ask = (headers: Record<string, string> = {}) =>
+        fetch(`http://127.0.0.1:${address.port}/api/assistant/query`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body: JSON.stringify({ symbol: 'RMUUSDT', question: 'What evidence is available?' }),
+        });
+      try {
+        await run(ask, (ms) => {
+          nowMs += ms;
+        });
+      } finally {
+        server.close();
+        await once(server, 'close');
+      }
+    }
+
+    it('limits each client per minute and recovers after the window', async () => {
+      await withLimitedServer({ perMinute: 2, dailyCap: 100 }, async (ask, tick) => {
+        expect((await ask({ 'x-forwarded-for': '1.1.1.1, 9.9.9.9' })).status).toBe(200);
+        expect((await ask({ 'x-forwarded-for': '1.1.1.1' })).status).toBe(200);
+        const limited = await ask({ 'x-forwarded-for': '1.1.1.1' });
+        expect(limited.status).toBe(429);
+        const body = (await limited.json()) as { data: null; error: { code: string } };
+        expect(body.error.code).toBe('RATE_LIMITED');
+        expect(body.data).toBeNull();
+        expect((await ask({ 'x-forwarded-for': '2.2.2.2' })).status).toBe(200);
+        tick(61_000);
+        expect((await ask({ 'x-forwarded-for': '1.1.1.1' })).status).toBe(200);
+      });
+    });
+
+    it('enforces the global daily cap across clients and resets at UTC midnight', async () => {
+      await withLimitedServer({ perMinute: 10, dailyCap: 2 }, async (ask, tick) => {
+        expect((await ask({ 'x-forwarded-for': '1.1.1.1' })).status).toBe(200);
+        expect((await ask({ 'x-forwarded-for': '2.2.2.2' })).status).toBe(200);
+        expect((await ask({ 'x-forwarded-for': '3.3.3.3' })).status).toBe(429);
+        tick(2 * 60 * 60 * 1000);
+        expect((await ask({ 'x-forwarded-for': '3.3.3.3' })).status).toBe(200);
+      });
+    });
   });
 
   it('rejects assistant snapshot and decision symbol mismatches before Qwen', async () => {

@@ -58,6 +58,31 @@ describe('deterministic market-quality engine', () => {
     );
   });
 
+  it('flags a capped book as unknown depth beyond the fetched levels', () => {
+    const result = simulateExit({
+      providerSymbol: 'RMUUSDT',
+      requestedQuantity: '12',
+      snapshot: testSnapshot({
+        bids: [
+          { price: '100', quantity: '5' },
+          { price: '99', quantity: '5' },
+        ],
+        requestedDepth: 2,
+      }),
+      now: NOW,
+    });
+
+    expect(result.unfilledQuantity).toBe('2');
+    expect(result.condition.label).toBe('thin-book');
+    expect(result.condition.reasons).toContainEqual(
+      expect.objectContaining({
+        metric: 'observedDepthLimit',
+        value: '2',
+        detail: 'observed book was limited to 2 bid levels; liquidity beyond them is unknown',
+      }),
+    );
+  });
+
   it('reports no fill for an empty book', () => {
     const result = simulateExit({
       providerSymbol: 'RMUUSDT',

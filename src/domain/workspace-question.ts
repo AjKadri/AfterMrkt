@@ -286,21 +286,6 @@ export async function runWorkspaceQuestion(
     attemptCount: 0,
   };
 
-  if (!isContextualQuestion(input.question)) {
-    return {
-      facts,
-      result: {
-        ...base,
-        status: 'out_of_scope',
-        topic: 'general_context',
-        answer:
-          'I can only answer about this AfterMrkt instrument, its evidence, liquidity, exit simulation, decision context, and known limitations.',
-        supportingFactIds: [],
-        uncertainties: [],
-      },
-    };
-  }
-
   const factPacket = facts.map((fact) => ({
     id: fact.id,
     label: fact.label,
@@ -454,12 +439,6 @@ function qwenSummary(fact: WorkspaceGroundingFact): string {
 
 function redactNumericLiterals(value: string): string {
   return value.replace(/\p{N}+/gu, '[value omitted]');
-}
-
-function isContextualQuestion(question: string): boolean {
-  return /\b(?:move|evidence|event|liquidity|depth|spread|slippage|fill|exit|position|book|uncertainty|unknown|missing|limitation|session|close|market|decision|hold|partial|full|native|analysis|aftermrkt)\b/iu.test(
-    question,
-  );
 }
 
 function topicForQuestion(question: string): WorkspaceQuestionResult['topic'] {
